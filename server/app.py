@@ -67,15 +67,8 @@ if _STATIC_DIR.exists():
 
 
 @app.get("/", include_in_schema=False)
-# --- INJECTION: Added 'request: Request' ---
-async def root(request: Request):
+async def root():
     """Root redirect — HF Spaces validator pings this first."""
-    
-    # --- INJECTION: If a browser (human) visits, show the UI ---
-    if "text/html" in request.headers.get("accept", ""):
-        return RedirectResponse(url="/ui/")
-        
-    # --- ORIGINAL JSON LOGIC ---
     return {
         "name": "email_triage",
         "version": "2.0.0",
@@ -105,6 +98,9 @@ async def reset(raw_request: Request):
     Start a new episode.
 
     Body (optional): {"task_id": "label_only" | "label_route" | "full_triage" | "adversarial_triage"}
+
+    The body may be empty, null, or missing — the OpenEnv Phase 1 validator
+    sends POST /reset with no body at all. We default to label_only in that case.
     """
     try:
         body_bytes = await raw_request.body()
@@ -129,6 +125,8 @@ async def reset(raw_request: Request):
 async def step(action: EmailTriageAction):
     """
     Submit an action for the current email.
+
+    Body: {"label": "...", "route": "...", "summary": "...", "reply": "...", "skip": false}
     """
     try:
         result = env.step(action)
@@ -141,6 +139,8 @@ async def step(action: EmailTriageAction):
 async def state(request: StateRequest):  # noqa: ARG001
     """
     Query current environment state.
+
+    Body: {} (empty per spec)
     """
     try:
         return env.state().model_dump()
@@ -185,6 +185,7 @@ async def score():
 async def metrics():
     """
     Aggregate environment metrics for Phase 3 human reviewers.
+    Shows corpus statistics and grader design rationale.
     """
     label_dist = {}
     route_dist = {}
@@ -226,3 +227,21 @@ async def metrics():
             },
         },
     }
+
+def main():
+    """
+    Server entry point — required by openenv validate.
+    Called by: the 'server' console script defined in [project.scripts].
+    Also invoked by: if __name__ == '__main__'
+    """
+    import uvicorn
+    uvicorn.run(
+        "server.app:app",
+        host="0.0.0.0",
+        port=int(__import__("os").getenv("PORT", "7860")),
+        workers=1,
+    )
+
+
+if __name__ == "__main__":
+    main()
