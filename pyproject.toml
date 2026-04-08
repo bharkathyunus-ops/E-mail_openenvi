@@ -1,7 +1,6 @@
-# pyproject.toml
 [build-system]
 requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.backends.legacy:build"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "email-triage-env"
@@ -17,6 +16,7 @@ dependencies = [
     "httpx>=0.27.0",
     "openai>=1.25.0",
     "requests>=2.31.0",
+    "openenv-core>=0.2.0",
 ]
 
 [project.optional-dependencies]
@@ -25,6 +25,9 @@ dev = [
     "pytest-asyncio>=0.23.0",
     "httpx>=0.27.0",
 ]
+
+[project.scripts]
+server = "server.app:main"
 
 [project.entry-points."openenv.envs"]
 email_triage = "server.email_triage_environment:EmailTriageEnvironment"
