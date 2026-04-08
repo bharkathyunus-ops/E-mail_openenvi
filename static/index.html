@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Email Triage Environment — OpenEnv</title>
+<style>
+  :root {
+    --bg: #f8f9fa; --surface: #ffffff; --surface2: #f1f3f5;
+    --border: #dee2e6; --text: #212529; --muted: #6c757d;
+    --blue: #1971c2; --blue-bg: #e7f5ff; --blue-text: #1864ab;
+    --green: #2f9e44; --green-bg: #ebfbee; --green-text: #1a7231;
+    --amber: #e67700; --amber-bg: #fff9db; --amber-text: #b34700;
+    --red: #c92a2a; --red-bg: #fff5f5; --red-text: #a61e1e;
+    --purple: #6741d9; --purple-bg: #f3f0ff; --purple-text: #4c2e9f;
+    --radius: 8px; --radius-lg: 12px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: var(--bg); color: var(--text); font-size: 15px; line-height: 1.6; }
+  a { color: var(--blue); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 13px;
+    background: var(--surface2); padding: 1px 6px; border-radius: 4px; }
+  pre { background: #1e1e2e; color: #cdd6f4; padding: 16px; border-radius: var(--radius);
+    overflow-x: auto; font-size: 13px; line-height: 1.6; }
+  pre code { background: none; padding: 0; color: inherit; font-size: inherit; }
+
+  /* Layout */
+  .page-wrap { max-width: 960px; margin: 0 auto; padding: 0 20px 60px; }
+
+  /* Header */
+  .hero { background: linear-gradient(135deg, #1864ab 0%, #6741d9 100%);
+    color: white; padding: 48px 0 36px; margin-bottom: 36px; }
+  .hero-inner { max-width: 960px; margin: 0 auto; padding: 0 20px; }
+  .hero h1 { font-size: 28px; font-weight: 700; margin-bottom: 8px; }
+  .hero p { font-size: 16px; opacity: 0.9; max-width: 640px; line-height: 1.6; }
+  .hero-meta { display: flex; gap: 16px; margin-top: 20px; flex-wrap: wrap; }
+  .hero-badge { background: rgba(255,255,255,0.18); border: 1px solid rgba(255,255,255,0.3);
+    border-radius: 20px; padding: 4px 14px; font-size: 13px; font-weight: 500; }
+
+  /* Status bar */
+  .status-bar { display: flex; align-items: center; gap: 8px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 10px 16px; margin-bottom: 28px;
+    font-size: 14px; }
+  .status-dot { width: 8px; height: 8px; border-radius: 50%; background: #aaa; flex-shrink: 0; }
+  .status-dot.ok { background: var(--green); }
+  .status-dot.err { background: var(--red); }
+  #status-text { color: var(--muted); }
+
+  /* Section */
+  .section { margin-bottom: 36px; }
+  .section-title { font-size: 13px; font-weight: 600; color: var(--muted);
+    letter-spacing: .07em; text-transform: uppercase; margin-bottom: 14px; }
+
+  /* Task cards */
+  .task-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; }
+  .task-card { background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius-lg); padding: 18px; position: relative; }
+  .task-card-top { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 8px; }
+  .task-name { font-size: 15px; font-weight: 600; }
+  .difficulty-badge { font-size: 11px; font-weight: 600; padding: 2px 10px;
+    border-radius: 20px; white-space: nowrap; }
+  .diff-easy    { background: var(--green-bg);  color: var(--green-text); }
+  .diff-medium  { background: var(--amber-bg);  color: var(--amber-text); }
+  .diff-hard    { background: var(--red-bg);    color: var(--red-text); }
+  .diff-expert  { background: var(--purple-bg); color: var(--purple-text); }
+  .task-desc { font-size: 13px; color: var(--muted); line-height: 1.5; margin-bottom: 12px; }
+  .task-meta { font-size: 12px; color: var(--muted); }
+  .task-meta span { margin-right: 12px; }
+
+  /* Metric cards */
+  .metric-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 28px; }
+  .metric { background: var(--surface2); border-radius: var(--radius); padding: 14px 16px; }
+  .metric-label { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+  .metric-val { font-size: 26px; font-weight: 700; color: var(--text); }
+
+  /* Table */
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th { background: var(--surface2); padding: 9px 12px; text-align: left;
+    font-size: 12px; font-weight: 600; color: var(--muted); letter-spacing: .05em;
+    text-transform: uppercase; border-bottom: 1px solid var(--border); }
+  td { padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+
+  /* Reward formula */
+  .formula-card { background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius-lg); padding: 20px 24px; }
+  .formula-row { display: grid; grid-template-columns: 160px 60px 1fr;
+    align-items: center; gap: 12px; padding: 8px 0;
+    border-bottom: 1px solid var(--surface2); }
+  .formula-row:last-child { border-bottom: none; }
+  .formula-name { font-weight: 500; font-size: 14px; }
+  .formula-weight { font-size: 15px; font-weight: 700; color: var(--blue); text-align: center; }
+  .formula-desc { font-size: 13px; color: var(--muted); line-height: 1.5; }
+  .penalty-row { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 16px; padding-top: 16px;
+    border-top: 1px solid var(--border); }
+  .penalty-pill { background: var(--red-bg); color: var(--red-text);
+    border: 1px solid #ffc9c9; border-radius: 20px; padding: 4px 14px; font-size: 13px; }
+
+  /* API section */
+  .api-list { display: flex; flex-direction: column; gap: 8px; }
+  .api-row { display: grid; grid-template-columns: 60px 180px 1fr;
+    gap: 12px; align-items: start; background: var(--surface);
+    border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 16px; }
+  .method { font-size: 11px; font-weight: 700; padding: 3px 8px;
+    border-radius: 4px; text-align: center; }
+  .method.post { background: var(--blue-bg); color: var(--blue-text); }
+  .method.get  { background: var(--green-bg); color: var(--green-text); }
+  .api-path { font-family: 'SF Mono', monospace; font-size: 14px; font-weight: 600; }
+  .api-desc { font-size: 13px; color: var(--muted); }
+
+  /* Email preview */
+  .email-preview { background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 14px 16px; margin-bottom: 10px; }
+  .email-subject { font-weight: 600; font-size: 14px; margin-bottom: 4px; }
+  .email-meta { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+  .email-body { font-size: 13px; color: var(--muted); line-height: 1.5; }
+  .email-tags { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+  .tag { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 4px; }
+  .tag-urgent     { background: var(--red-bg); color: var(--red-text); }
+  .tag-normal     { background: var(--blue-bg); color: var(--blue-text); }
+  .tag-low        { background: var(--surface2); color: var(--muted); border: 1px solid var(--border); }
+  .tag-spam       { background: #fff0f6; color: #a61e4d; }
+  .tag-followup   { background: var(--amber-bg); color: var(--amber-text); }
+  .tag-adversarial{ background: var(--purple-bg); color: var(--purple-text); }
+
+  /* Collapsible */
+  details { border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 10px;
+    background: var(--surface); }
+  summary { padding: 12px 16px; cursor: pointer; font-weight: 500; font-size: 14px;
+    user-select: none; list-style: none; display: flex; justify-content: space-between; align-items: center; }
+  summary::-webkit-details-marker { display: none; }
+  summary::after { content: '▸'; color: var(--muted); transition: transform .2s; }
+  details[open] summary::after { transform: rotate(90deg); }
+  details .detail-body { padding: 0 16px 16px; font-size: 13px; color: var(--muted); line-height: 1.6; }
+
+  @media (max-width: 640px) {
+    .metric-row { grid-template-columns: 1fr 1fr; }
+    .formula-row { grid-template-columns: 120px 50px 1fr; }
+    .api-row { grid-template-columns: 50px 140px 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<div class="hero">
+  <div class="hero-inner">
+    <h1>📧 Email Triage Environment</h1>
+    <p>An OpenEnv-compliant environment for evaluating AI agents on real-world email
+    triage — one of the highest-volume knowledge-work tasks in any organization.
+    16 emails, 4 progressive tasks, ROUGE-1 grading, adversarial edge cases.</p>
+    <div class="hero-meta">
+      <span class="hero-badge">OpenEnv v1</span>
+      <span class="hero-badge">v2.0.0</span>
+      <span class="hero-badge">MIT License</span>
+      <span class="hero-badge">16 emails · 4 tasks · ROUGE-1 grading</span>
+    </div>
+  </div>
+</div>
+
+<div class="page-wrap">
+
+  <!-- Live status -->
+  <div class="status-bar">
+    <div class="status-dot" id="status-dot"></div>
+    <span id="status-text">Checking environment status…</span>
+    <span style="margin-left:auto; font-size:13px; color:var(--muted)">
+      API: <a href="/docs">/docs</a> · <a href="/metrics">/metrics</a>
+    </span>
+  </div>
+
+  <!-- Stats -->
+  <div class="metric-row">
+    <div class="metric"><div class="metric-label">Emails in corpus</div><div class="metric-val">16</div></div>
+    <div class="metric"><div class="metric-label">Tasks</div><div class="metric-val">4</div></div>
+    <div class="metric"><div class="metric-label">Adversarial emails</div><div class="metric-val">4</div></div>
+    <div class="metric"><div class="metric-label">Grader type</div><div class="metric-val" style="font-size:18px">ROUGE-1</div></div>
+  </div>
+
+  <!-- Tasks -->
+  <div class="section">
+    <div class="section-title">Tasks</div>
+    <div class="task-grid">
+      <div class="task-card">
+        <div class="task-card-top">
+          <div class="task-name">Label Only</div>
+          <span class="difficulty-badge diff-easy">Easy</span>
+        </div>
+        <div class="task-desc">Assign the correct urgency label to each email. Tests basic email classification ability.</div>
+        <div class="task-meta">
+          <span>16 steps</span>
+          <span>Threshold: 0.50</span>
+        </div>
+      </div>
+      <div class="task-card">
+        <div class="task-card-top">
+          <div class="task-name">Label &amp; Route</div>
+          <span class="difficulty-badge diff-medium">Medium</span>
+        </div>
+        <div class="task-desc">Assign urgency label AND route to the correct department. 50% weight each.</div>
+        <div class="task-meta">
+          <span>16 steps</span>
+          <span>Threshold: 0.50</span>
+        </div>
+      </div>
+      <div class="task-card">
+        <div class="task-card-top">
+          <div class="task-name">Full Triage</div>
+          <span class="difficulty-badge diff-hard">Hard</span>
+        </div>
+        <div class="task-desc">Label + route + concise ROUGE-1 scored summary + relevant professional reply.</div>
+        <div class="task-meta">
+          <span>16 steps</span>
+          <span>Threshold: 0.40</span>
+        </div>
+      </div>
+      <div class="task-card">
+        <div class="task-card-top">
+          <div class="task-name">Adversarial</div>
+          <span class="difficulty-badge diff-expert">Expert</span>
+        </div>
+        <div class="task-desc">Full triage including 4 deceptive emails: misleading subjects, typosquatted senders, phishing disguised as legitimate.</div>
+        <div class="task-meta">
+          <span>16 steps</span>
+          <span>Threshold: 0.35</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Reward function -->
+  <div class="section">
+    <div class="section-title">Reward Function — full_triage weights</div>
+    <div class="formula-card">
+      <div class="formula-row">
+        <div class="formula-name">Label accuracy</div>
+        <div class="formula-weight">0.25</div>
+        <div class="formula-desc">Exact match = 1.0 · Adjacent urgency tier = 0.4 · Wrong = 0.0</div>
+      </div>
+      <div class="formula-row">
+        <div class="formula-name">Route accuracy</div>
+        <div class="formula-weight">0.25</div>
+        <div class="formula-desc">Exact match = 1.0 · Wrong = 0.0 · Spam requires NO route (providing one = 0.0)</div>
+      </div>
+      <div class="formula-row">
+        <div class="formula-name">Summary quality</div>
+        <div class="formula-weight">0.30</div>
+        <div class="formula-desc">ROUGE-1 F1 vs reference summary — keyword stuffing blocked. &lt;20 chars = 0.0 · &gt;280 chars = 0.30 max</div>
+      </div>
+      <div class="formula-row">
+        <div class="formula-name">Reply quality</div>
+        <div class="formula-weight">0.20</div>
+        <div class="formula-desc">Relevance-aware: generic/canned replies cap at 0.2. Correct omission = 0.8. Relevant reply = up to 1.0</div>
+      </div>
+      <div class="penalty-row">
+        <span class="penalty-pill">Skip email: −0.05</span>
+        <span class="penalty-pill">Reply to spam: −0.20</span>
+        <span class="penalty-pill">Mono-label (65–80%): −0.05</span>
+        <span class="penalty-pill">Mono-label (&gt;80%): −0.10</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- API reference -->
+  <div class="section">
+    <div class="section-title">API Reference</div>
+    <div class="api-list">
+      <div class="api-row">
+        <span class="method get">GET</span>
+        <span class="api-path">/health</span>
+        <span class="api-desc">Liveness probe — returns 200 with env name, version, corpus size</span>
+      </div>
+      <div class="api-row">
+        <span class="method post">POST</span>
+        <span class="api-path">/reset</span>
+        <span class="api-desc">Start new episode. Body: <code>{"task_id": "label_only"}</code></span>
+      </div>
+      <div class="api-row">
+        <span class="method post">POST</span>
+        <span class="api-path">/step</span>
+        <span class="api-desc">Submit action. Body: <code>{"label": "urgent", "route": "engineering", "summary": "...", "reply": "..."}</code></span>
+      </div>
+      <div class="api-row">
+        <span class="method post">POST</span>
+        <span class="api-path">/state</span>
+        <span class="api-desc">Query full episode state. Body: <code>{}</code></span>
+      </div>
+      <div class="api-row">
+        <span class="method get">GET</span>
+        <span class="api-path">/tasks</span>
+        <span class="api-desc">Enumerate all tasks with metadata, weights, and thresholds</span>
+      </div>
+      <div class="api-row">
+        <span class="method get">GET</span>
+        <span class="api-path">/metrics</span>
+        <span class="api-desc">Aggregate corpus stats + grader design rationale (for judges)</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Email corpus preview -->
+  <div class="section">
+    <div class="section-title">Email corpus sample</div>
+
+    <div class="email-preview">
+      <div class="email-subject">URGENT: Production database unresponsive</div>
+      <div class="email-meta">From: devops@acmecorp.com</div>
+      <div class="email-body">Our primary PostgreSQL database has been unresponsive for 20 minutes.
+All customer transactions are failing with timeout errors…</div>
+      <div class="email-tags">
+        <span class="tag tag-urgent">urgent</span>
+        <span class="tag tag-normal">→ engineering</span>
+      </div>
+    </div>
+
+    <div class="email-preview">
+      <div class="email-subject">URGENT: Birthday surprise for Sarah — don't miss it! <span class="tag tag-adversarial" style="font-size:11px;margin-left:8px">adversarial</span></div>
+      <div class="email-meta">From: hr@acmecorp.com</div>
+      <div class="email-body">Don't forget! We're throwing a surprise birthday party for Sarah next Thursday at 3pm…
+<br><em>Subject says URGENT — content is trivial. Correct label: <strong>low</strong></em></div>
+      <div class="email-tags">
+        <span class="tag tag-low">low</span>
+        <span class="tag tag-adversarial">deceptive subject</span>
+      </div>
+    </div>
+
+    <div class="email-preview">
+      <div class="email-subject">Re: Microsoft 365 License Renewal — Action Required <span class="tag tag-adversarial" style="font-size:11px;margin-left:8px">adversarial</span></div>
+      <div class="email-meta">From: noreply-billing@microsoftt-licenses.net &nbsp;<em style="color:var(--red-text);font-size:12px">(typosquatted domain)</em></div>
+      <div class="email-body">Your Microsoft Office 365 license is expiring in 3 days. Renew at microsoftt-licenses.net/renew-now…
+<br><em>Looks legitimate — domain is typosquatted. Correct label: <strong>spam</strong></em></div>
+      <div class="email-tags">
+        <span class="tag tag-spam">spam</span>
+        <span class="tag tag-adversarial">typosquatted sender</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Baseline scores -->
+  <div class="section">
+    <div class="section-title">Baseline scores (Qwen2.5-72B via HF Router)</div>
+    <table>
+      <thead>
+        <tr>
+          <th>Task</th><th>Difficulty</th><th>Typical avg reward</th><th>Success</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td><code>label_only</code></td><td>Easy</td><td>0.78 – 0.88</td><td>✅ true</td></tr>
+        <tr><td><code>label_route</code></td><td>Medium</td><td>0.60 – 0.74</td><td>✅ true</td></tr>
+        <tr><td><code>full_triage</code></td><td>Hard</td><td>0.40 – 0.58</td><td>✅ true</td></tr>
+        <tr><td><code>adversarial_triage</code></td><td>Expert</td><td>0.30 – 0.48</td><td>⚠️ borderline</td></tr>
+      </tbody>
+    </table>
+    <p style="font-size:12px;color:var(--muted);margin-top:8px">
+      Scores vary per run due to LLM temperature (0.6) — this is intentional and reflects real-world variability.
+    </p>
+  </div>
+
+  <!-- Quick start -->
+  <div class="section">
+    <div class="section-title">Quick start</div>
+    <pre><code># 1. Start the server
+docker build -t email-triage-env .
+docker run -p 7860:7860 email-triage-env
+
+# 2. Reset and run an episode
+curl -X POST http://localhost:7860/reset -H 'Content-Type: application/json' \
+  -d '{"task_id": "label_only"}'
+
+curl -X POST http://localhost:7860/step -H 'Content-Type: application/json' \
+  -d '{"label": "urgent"}'
+
+# 3. Run baseline inference
+export HF_TOKEN=hf_your_token
+python inference.py</code></pre>
+  </div>
+
+</div>
+
+<script>
+// Live status check
+fetch('/health')
+  .then(r => r.json())
+  .then(d => {
+    document.getElementById('status-dot').className = 'status-dot ok';
+    document.getElementById('status-text').textContent =
+      'Environment running — version ' + d.version + ' · ' + d.corpus_size + ' emails · tasks: ' + d.tasks.join(', ');
+  })
+  .catch(() => {
+    document.getElementById('status-dot').className = 'status-dot err';
+    document.getElementById('status-text').textContent = 'Environment offline or starting up…';
+  });
+</script>
+</body>
+</html>

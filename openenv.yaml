@@ -1,0 +1,167 @@
+# openenv.yaml
+name: email_triage
+version: "1.0.0"
+description: >
+  A real-world OpenEnv environment where an AI agent triages a queue of 12
+  realistic workplace emails. For each email the agent assigns urgency labels,
+  routes to the correct department, writes concise summaries, and drafts replies
+  when warranted. Three tasks of increasing difficulty evaluate agent capability
+  from basic classification through to full triage quality.
+author: "OpenEnv Hackathon Submission"
+license: MIT
+
+tasks:
+  - id: label_only
+    name: "Label Only"
+    description: >
+      Assign the correct urgency label to each email.
+      Urgency levels: urgent | normal | low | spam | needs_followup.
+      Partial credit for adjacent urgency tiers.
+    difficulty: easy
+    max_steps: 12
+    success_threshold: 0.5
+
+  - id: label_route
+    name: "Label and Route"
+    description: >
+      Assign urgency label AND route each email to the correct department.
+      Reward is split 50/50 between label accuracy and routing accuracy.
+    difficulty: medium
+    max_steps: 12
+    success_threshold: 0.5
+
+  - id: full_triage
+    name: "Full Triage"
+    description: >
+      Complete email triage: assign label, route to department, write a concise
+      summary (≤280 chars covering key facts), and draft a professional reply
+      for emails that require one. Rewards partial progress on each sub-task.
+    difficulty: hard
+    max_steps: 12
+    success_threshold: 0.4
+
+action_space:
+  type: object
+  properties:
+    label:
+      type: string
+      enum:
+        - urgent
+        - normal
+        - low
+        - spam
+        - needs_followup
+      description: >
+        Urgency classification. urgent=action within hours, normal=within 2 days,
+        low=can wait a week, spam=unsolicited or phishing, needs_followup=awaiting
+        external input.
+    route:
+      type: string
+      enum:
+        - engineering
+        - support
+        - legal
+        - finance
+        - hr
+        - it
+        - security
+        - management
+      description: Department this email should be routed to.
+    summary:
+      type: string
+      maxLength: 280
+      description: >
+        Concise summary of the email content. Must be ≤280 characters.
+        Higher scores are given when key facts and entities are present.
+    reply:
+      type: string
+      description: >
+        Professional reply snippet. Only provide when the email genuinely
+        warrants a direct response. Omit for informational emails and spam.
+    skip:
+      type: boolean
+      default: false
+      description: >
+        Defer this email without acting. Incurs a reward penalty of -0.05.
+
+observation_space:
+  type: object
+  properties:
+    email:
+      type: object
+      nullable: true
+      description: The current email to triage.
+      properties:
+        id:
+          type: string
+        subject:
+          type: string
+        sender:
+          type: string
+        body:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+    step:
+      type: integer
+      description: Current step number (0-indexed, increments after each action).
+    total_emails:
+      type: integer
+      description: Total emails in this episode (always 12).
+    task_id:
+      type: string
+      description: Active task identifier.
+    episode_done:
+      type: boolean
+      description: True when all emails have been processed and the episode is over.
+    last_action_feedback:
+      type: string
+      nullable: true
+      description: >
+        Human-readable breakdown of scores from the previous action
+        (e.g. "scores: label=1.00, route=0.00"). Null at episode start.
+    last_reward:
+      type: number
+      description: Reward received for the most recent action. 0.0 at episode start.
+
+reward:
+  type: number
+  range: [-0.20, 1.0]
+  description: >
+    Shaped reward computed per email from a weighted combination:
+
+    label_only task:
+      label accuracy × 1.0
+
+    label_route task:
+      label accuracy × 0.5 + route accuracy × 0.5
+
+    full_triage task:
+      label × 0.30 + route × 0.30 + summary quality × 0.25 + reply quality × 0.15
+
+    Sub-score formulas:
+      label:   exact match=1.0, adjacent urgency tier=0.5, wrong=0.0
+      route:   exact match=1.0, wrong=0.0 (spam has no required route)
+      summary: 0.0 if absent, 0.1 if <15 chars, 0.4 if >280 chars,
+               else 0.5 + 0.5*(matched_key_terms/total_key_terms)
+      reply:   1.0 if reply needed and well-formed (30-600 chars),
+               0.3 if too short, 0.6 if too long, 0.0 if missing when needed,
+               0.8 if correctly omitted, 0.2 if incorrectly provided
+
+    Hard penalties (override all sub-scores):
+      skip action:          -0.05
+      reply to spam email:  -0.20
+
+endpoints:
+  reset: "POST /reset"
+  step: "POST /step"
+  state: "POST /state"
+  health: "GET /health"
+  tasks: "GET /tasks"
+  score: "GET /score"
+
+docker:
+  port: 7860
+  build_command: "docker build -t email-triage-env ."
+  run_command: "docker run -p 7860:7860 email-triage-env"
