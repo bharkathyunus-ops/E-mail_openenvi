@@ -1,4 +1,3 @@
-# server/models.py
 """
 Pydantic v2 models for the Email Triage OpenEnv environment.
 All typed models used by the environment, server, and client.
@@ -67,9 +66,15 @@ class StepResult(BaseModel):
 
 
 class ResetRequest(BaseModel):
-    """Body for POST /reset."""
+    """
+    Body for POST /reset.
 
-    task_id: str = "label_only"
+    task_id is fully optional — defaults to label_only when body is empty,
+    missing, or null (the OpenEnv validator sends POST /reset with no body
+    at all during Phase 1 automated checks).
+    """
+
+    task_id: Optional[str] = "label_only"
 
 
 class StateRequest(BaseModel):
