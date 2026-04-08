@@ -1,4 +1,3 @@
-# Dockerfile
 FROM python:3.11-slim
 
 # Install system dependencies
@@ -13,7 +12,7 @@ WORKDIR /app
 
 # Install Python dependencies first (better layer caching)
 COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt && pip install --no-cache-dir "openenv-core>=0.2.0" || true
 
 # Copy project files
 COPY . .
