@@ -18,7 +18,7 @@ Endpoints:
 import os
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -67,8 +67,15 @@ if _STATIC_DIR.exists():
 
 
 @app.get("/", include_in_schema=False)
-async def root():
+# --- INJECTION: Added 'request: Request' ---
+async def root(request: Request):
     """Root redirect — HF Spaces validator pings this first."""
+    
+    # --- INJECTION: If a browser (human) visits, show the UI ---
+    if "text/html" in request.headers.get("accept", ""):
+        return RedirectResponse(url="/ui/")
+        
+    # --- ORIGINAL JSON LOGIC ---
     return {
         "name": "email_triage",
         "version": "2.0.0",
@@ -93,14 +100,24 @@ async def health():
 
 
 @app.post("/reset")
-async def reset(request: ResetRequest):
+async def reset(raw_request: Request):
     """
     Start a new episode.
 
-    Body: {"task_id": "label_only" | "label_route" | "full_triage" | "adversarial_triage"}
+    Body (optional): {"task_id": "label_only" | "label_route" | "full_triage" | "adversarial_triage"}
     """
     try:
-        result = env.reset(task_id=request.task_id)
+        body_bytes = await raw_request.body()
+        task_id = "label_only"
+        if body_bytes and body_bytes.strip() not in (b"", b"null", b"{}"):
+            import json
+            try:
+                data = json.loads(body_bytes)
+                if isinstance(data, dict) and data.get("task_id"):
+                    task_id = str(data["task_id"])
+            except Exception:
+                pass
+        result = env.reset(task_id=task_id)
         return result.model_dump()
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -112,8 +129,6 @@ async def reset(request: ResetRequest):
 async def step(action: EmailTriageAction):
     """
     Submit an action for the current email.
-
-    Body: {"label": "...", "route": "...", "summary": "...", "reply": "...", "skip": false}
     """
     try:
         result = env.step(action)
@@ -126,8 +141,6 @@ async def step(action: EmailTriageAction):
 async def state(request: StateRequest):  # noqa: ARG001
     """
     Query current environment state.
-
-    Body: {} (empty per spec)
     """
     try:
         return env.state().model_dump()
@@ -172,7 +185,6 @@ async def score():
 async def metrics():
     """
     Aggregate environment metrics for Phase 3 human reviewers.
-    Shows corpus statistics and grader design rationale.
     """
     label_dist = {}
     route_dist = {}
