@@ -27,24 +27,38 @@ from server.models import (
 
 # ──────────────────────────────────────────────────────────────────────────────
 # CORE CONTRACT: S(x)
+#
+# Every number that leaves this file as a "score" passes through S().
+# Raw internal range:  [-0.25 .. 1.0]
+# Output range:        (0.01 .. 0.99)  — strictly open both ends
+#
+# This is the SINGLE place that guarantees the Phase 2 constraint.
 # ──────────────────────────────────────────────────────────────────────────────
 
-_S_IN_LO  = -0.25   
-_S_IN_HI  =  1.0    
-_S_OUT_LO =  0.01   
-_S_OUT_HI =  0.99   
+_S_IN_LO  = -0.25   # lowest raw value (worse than spam-reply penalty)
+_S_IN_HI  =  1.0    # highest raw value
+_S_OUT_LO =  0.01   # output floor  (> 0)
+_S_OUT_HI =  0.99   # output ceiling (< 1)
 
 
 def S(raw: float) -> float:
+    """
+    Scale any raw score into the open interval (0.01, 0.99).
+    Preserves ordering: higher raw → higher output.
+    Never returns exactly 0.0 or 1.0.
+    """
     clipped = max(_S_IN_LO, min(_S_IN_HI, float(raw)))
-    t = (clipped - _S_IN_LO) / (_S_IN_HI - _S_IN_LO)   
+    t = (clipped - _S_IN_LO) / (_S_IN_HI - _S_IN_LO)   # 0.0 .. 1.0
     out = _S_OUT_LO + t * (_S_OUT_HI - _S_OUT_LO)
     result = round(out, 6)
+    # Hard safety assertion — will raise immediately if logic is ever wrong
     assert 0.0 < result < 1.0, f"S({raw}) produced {result} which is out of (0,1)"
     return result
 
 
+# Convenience: safe task_score from cumulative sum
 def _running_score(cumulative: float, n_emails: int) -> float:
+    """Compute live task_score from cumulative reward. Always in (0,1)."""
     if n_emails <= 0:
         return S(0.5)
     return S(cumulative / n_emails)
@@ -428,7 +442,7 @@ def _tok(text: str) -> List[str]:
     tokens = re.findall(r"[a-z0-9]+", text.lower())
     return [t for t in tokens if t not in _STOPWORDS and len(t) > 1]
 
-# CHANGED: Ensure _r1f1 never returns 0.0
+
 def _r1f1(hyp: str, ref: str) -> float:
     h, r = set(_tok(hyp)), set(_tok(ref))
     if not h or not r:
@@ -443,12 +457,21 @@ def _r1f1(hyp: str, ref: str) -> float:
 # ──────────────────────────────────────────────────────────────────────────────
 
 class EmailTriageEnvironment:
+    """
+    OpenEnv-compliant email triage environment v3.0.
+
+    ALL reward / task_score values returned are strictly in (0.0, 1.0).
+    This is enforced by routing every value through S() before it leaves
+    the class. S() asserts correctness — any regression raises immediately.
+    """
 
     def __init__(self) -> None:
         self._state = EmailTriageState()
         self._cfg: Dict[str, Any] = {}
         self._emails: List[Dict[str, Any]] = []
         self._label_dist: Dict[str, int] = {}
+
+    # ── Public API ─────────────────────────────────────────────────────────────
 
     def reset(self, task_id: str = "label_only") -> StepResult:
         if task_id not in TASK_CONFIGS:
@@ -460,7 +483,7 @@ class EmailTriageEnvironment:
         self._emails = copy.deepcopy(EMAIL_CORPUS)
         self._label_dist = {}
 
-        initial_score = S(0.5)
+        initial_score = S(0.5)   # mid-range — strictly in (0,1) immediately
 
         self._state = EmailTriageState(
             task_id=task_id,
@@ -475,10 +498,259 @@ class EmailTriageEnvironment:
 
         return StepResult(
             observation=self._obs(),
-            reward=S(0.5),
+            reward=S(0.5),    # neutral reward at reset — strictly in (0,1)
             done=False,
             info={
                 "task_id": task_id,
                 "total_emails": len(self._emails),
                 "difficulty": self._cfg["difficulty"],
                 "task_score": initial_score,
+            },
+        )
+
+    def step(self, action: EmailTriageAction) -> StepResult:
+        # ── Already done ──────────────────────────────────────────────────────
+        if self._state.done:
+            safe_reward = S(0.5)
+            return StepResult(
+                observation=EmailTriageObservation(
+                    episode_done=True, task_id=self._state.task_id
+                ),
+                reward=safe_reward,
+                done=True,
+                info={
+                    "error": "episode_already_done",
+                    "task_score": self._state.task_score,
+                },
+            )
+
+        idx = self._state.current_email_index
+        if idx >= len(self._emails):
+            self._state.done = True
+            safe_reward = S(0.5)
+            return StepResult(
+                observation=EmailTriageObservation(
+                    episode_done=True, task_id=self._state.task_id
+                ),
+                reward=safe_reward,
+                done=True,
+                info={"task_score": self._state.task_score},
+            )
+
+        # ── Grade ──────────────────────────────────────────────────────────────
+        email_data = self._emails[idx]
+        gt = email_data["ground_truth"]
+        raw_reward, feedback, grade_info = self._grade(action, gt, email_data)
+
+        # S() maps raw → (0.01, 0.99)
+        step_reward = S(raw_reward)
+
+        # Track label diversity
+        if action.label and not action.skip:
+            self._label_dist[action.label] = self._label_dist.get(action.label, 0) + 1
+
+        # ── Update state ───────────────────────────────────────────────────────
+        self._state.actions_log.append({
+            "step": self._state.step_count + 1,
+            "email_id": email_data["id"],
+            "action": {k: v for k, v in {
+                "label": action.label,
+                "route": action.route,
+                "skip": action.skip or None,
+            }.items() if v},
+            "reward": step_reward,
+            "feedback": feedback,
+        })
+
+        self._state.cumulative_reward += step_reward
+        self._state.step_count += 1
+        self._state.current_email_index += 1
+
+        # ── Live task_score — updated on EVERY step ────────────────────────────
+        # Divide cumulative by total_emails so score grows naturally step-by-step.
+        # S() guarantees it is always strictly in (0.01, 0.99).
+        diversity_pen = self._diversity_penalty()
+        raw_ts = (self._state.cumulative_reward / self._state.total_emails) - diversity_pen
+        live_ts = S(raw_ts)
+        self._state.task_score = live_ts
+
+        done = self._state.current_email_index >= len(self._emails)
+        if done:
+            self._state.done = True
+
+        # ── Build response ─────────────────────────────────────────────────────
+        info = dict(grade_info)
+        info["task_score"]        = live_ts           # always in (0,1)
+        info["cumulative_reward"] = round(self._state.cumulative_reward, 4)
+        info["step"]              = self._state.step_count
+        if done:
+            info["diversity_penalty"] = round(diversity_pen, 4)
+
+        return StepResult(
+            observation=self._obs(feedback=feedback, last_reward=step_reward),
+            reward=step_reward,
+            done=done,
+            info=info,
+        )
+
+    def state(self) -> EmailTriageState:
+        return self._state
+
+    # ── Diversity penalty ──────────────────────────────────────────────────────
+
+    def _diversity_penalty(self) -> float:
+        total = sum(self._label_dist.values())
+        if total < 4:
+            return 0.0
+        top = max(self._label_dist.values())
+        ratio = top / total
+        if ratio > 0.80:
+            return 0.10
+        if ratio > 0.65:
+            return 0.05
+        return 0.0
+
+    # ── Observation builder ────────────────────────────────────────────────────
+
+    def _obs(
+        self,
+        feedback: Optional[str] = None,
+        last_reward: Optional[float] = None,
+    ) -> EmailTriageObservation:
+        idx = self._state.current_email_index
+        if self._state.done or idx >= len(self._emails):
+            return EmailTriageObservation(
+                episode_done=True,
+                task_id=self._state.task_id,
+                step=self._state.step_count,
+                total_emails=self._state.total_emails,
+                last_action_feedback=feedback,
+                last_reward=last_reward or S(0.5),
+            )
+        raw = self._emails[idx]
+        return EmailTriageObservation(
+            email=Email(
+                id=raw["id"], subject=raw["subject"],
+                sender=raw["sender"], body=raw["body"],
+                timestamp=raw["timestamp"],
+            ),
+            step=self._state.step_count,
+            total_emails=self._state.total_emails,
+            task_id=self._state.task_id,
+            episode_done=False,
+            last_action_feedback=feedback,
+            last_reward=last_reward or S(0.5),
+        )
+
+    # ── Grader ─────────────────────────────────────────────────────────────────
+
+    def _grade(
+        self,
+        action: EmailTriageAction,
+        gt: Dict[str, Any],
+        email_data: Dict[str, Any],
+    ) -> Tuple[float, str, Dict[str, Any]]:
+        """
+        Returns (raw_reward, feedback, info).
+        raw_reward is in [-0.25, 1.0] — caller passes it through S().
+        """
+        # Hard penalties — raw values, S() applied by caller
+        if action.skip:
+            return -0.05, "skipped (-0.05)", {"skipped": True}
+        if gt["label"] == "spam" and action.reply:
+            return -0.20, "replied to spam (-0.20)", {"spam_reply_penalty": True}
+
+        weights = self._cfg["weights"]
+        task_id = self._state.task_id
+        parts: List[str] = []
+        info: Dict[str, Any] = {}
+        total = 0.0
+
+        # Label
+        if "label" in weights:
+            ls = self._label_score(action.label, gt["label"])
+            total += ls * weights["label"]
+            info["label_score"] = ls
+            parts.append(f"label={ls:.2f}")
+
+        # Route
+        if "route" in weights and task_id in ("label_route", "full_triage", "adversarial_triage"):
+            rs = self._route_score(action.route, gt["route"])
+            total += rs * weights["route"]
+            info["route_score"] = rs
+            parts.append(f"route={rs:.2f}")
+
+        # Summary
+        if "summary" in weights and task_id in ("full_triage", "adversarial_triage"):
+            ss = self._summary_score(action.summary, gt.get("reference_summary", ""))
+            total += ss * weights["summary"]
+            info["summary_score"] = ss
+            parts.append(f"summary={ss:.2f}")
+
+        # Reply
+        if "reply" in weights and task_id in ("full_triage", "adversarial_triage"):
+            rps = self._reply_score(
+                action.reply, gt, email_data.get("body", ""), gt.get("key_terms", [])
+            )
+            total += rps * weights["reply"]
+            info["reply_score"] = rps
+            parts.append(f"reply={rps:.2f}")
+
+        # Raw total is in [0.0, 1.0] — clamp for safety
+        raw = max(0.0001, min(0.9999, total))
+        return raw, "scores: " + ", ".join(parts), info
+
+    # ── Sub-scorers (return raw 0.0–1.0, S() applied at step level) ──────────
+
+    @staticmethod
+    def _label_score(predicted: Optional[str], truth: str) -> float:
+        if not predicted:
+            return 0.0001
+        p = predicted.strip().lower()
+        if p not in VALID_LABELS:
+            return 0.0001
+        if p == truth:
+            return 0.9999
+        return max(0.0001, min(0.9999, LABEL_ADJACENCY.get(truth, {}).get(p, 0.0001)))
+
+    @staticmethod
+    def _route_score(predicted: Optional[str], truth: Optional[str]) -> float:
+        if truth is None:   # spam — correct to have no route
+            return 0.9999 if (not predicted or not predicted.strip()) else 0.0001
+        if not predicted or not predicted.strip():
+            return 0.0001
+        p = predicted.strip().lower()
+        val = (0.9999 if p == truth else 0.0001) if p in VALID_ROUTES else 0.0001
+        return val
+
+    @staticmethod
+    def _summary_score(summary: Optional[str], reference: str) -> float:
+        if not summary or len(summary.strip()) < 20:
+            return 0.0001
+        s = summary.strip()
+        if len(s) > 280:
+            return 0.30
+        if not reference:
+            return max(0.0001, min(0.90, len(s) / 140.0))
+        return max(0.0001, round(min(0.95, _r1f1(s, reference) / 0.35), 4))
+
+    @staticmethod
+    def _reply_score(
+        reply: Optional[str],
+        gt: Dict[str, Any],
+        body: str,
+        key_terms: List[str],
+    ) -> float:
+        needs = gt.get("needs_reply", False)
+        if not needs:
+            return 0.80 if not reply else 0.10
+        if not reply or len(reply.strip()) < 25:
+            return 0.0001
+        r = reply.strip()
+        ref = f"{body} {' '.join(key_terms)}"
+        rel = _r1f1(r, ref)
+        if len(r) > 700:
+            return max(0.0001, round(min(0.65, 0.35 + 0.3 * min(1.0, rel / 0.20)), 4))
+        if rel < 0.10:
+            return 0.20
+        return max(0.0001, round(min(0.95, 0.50 + 0.45 * min(1.0, rel / 0.25)), 4))
