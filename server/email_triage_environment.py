@@ -27,38 +27,24 @@ from server.models import (
 
 # ──────────────────────────────────────────────────────────────────────────────
 # CORE CONTRACT: S(x)
-#
-# Every number that leaves this file as a "score" passes through S().
-# Raw internal range:  [-0.25 .. 1.0]
-# Output range:        (0.01 .. 0.99)  — strictly open both ends
-#
-# This is the SINGLE place that guarantees the Phase 2 constraint.
 # ──────────────────────────────────────────────────────────────────────────────
 
-_S_IN_LO  = -0.25   # lowest raw value (worse than spam-reply penalty)
-_S_IN_HI  =  1.0    # highest raw value
-_S_OUT_LO =  0.01   # output floor  (> 0)
-_S_OUT_HI =  0.99   # output ceiling (< 1)
+_S_IN_LO  = -0.25   
+_S_IN_HI  =  1.0    
+_S_OUT_LO =  0.01   
+_S_OUT_HI =  0.99   
 
 
 def S(raw: float) -> float:
-    """
-    Scale any raw score into the open interval (0.01, 0.99).
-    Preserves ordering: higher raw → higher output.
-    Never returns exactly 0.0 or 1.0.
-    """
     clipped = max(_S_IN_LO, min(_S_IN_HI, float(raw)))
-    t = (clipped - _S_IN_LO) / (_S_IN_HI - _S_IN_LO)   # 0.0 .. 1.0
+    t = (clipped - _S_IN_LO) / (_S_IN_HI - _S_IN_LO)   
     out = _S_OUT_LO + t * (_S_OUT_HI - _S_OUT_LO)
     result = round(out, 6)
-    # Hard safety assertion — will raise immediately if logic is ever wrong
     assert 0.0 < result < 1.0, f"S({raw}) produced {result} which is out of (0,1)"
     return result
 
 
-# Convenience: safe task_score from cumulative sum
 def _running_score(cumulative: float, n_emails: int) -> float:
-    """Compute live task_score from cumulative reward. Always in (0,1)."""
     if n_emails <= 0:
         return S(0.5)
     return S(cumulative / n_emails)
@@ -290,7 +276,6 @@ EMAIL_CORPUS: List[Dict[str, Any]] = [
             "key_terms": ["GDPR", "compliance", "audit", "legal", "regulation", "DPA"],
         },
     },
-    # ── Adversarial ───────────────────────────────────────────────────────────
     {
         "id": "email_013",
         "subject": "URGENT: Birthday surprise for Sarah — don't miss it!",
@@ -302,7 +287,7 @@ EMAIL_CORPUS: List[Dict[str, Any]] = [
         ),
         "timestamp": "2025-04-07T09:00:00Z",
         "ground_truth": {
-            "label": "low",   # subject says URGENT but content is trivial
+            "label": "low",   
             "route": "management", "needs_reply": False,
             "reference_summary": (
                 "Surprise birthday party for Sarah Thursday 3pm break room, "
@@ -314,7 +299,7 @@ EMAIL_CORPUS: List[Dict[str, Any]] = [
     {
         "id": "email_014",
         "subject": "Re: Microsoft 365 License Renewal — Action Required",
-        "sender": "noreply-billing@microsoftt-licenses.net",  # typosquatted
+        "sender": "noreply-billing@microsoftt-licenses.net",  
         "body": (
             "Your Microsoft Office 365 license expires in 3 days. To avoid service "
             "interruption renew now and enter payment details at: "
@@ -322,7 +307,7 @@ EMAIL_CORPUS: List[Dict[str, Any]] = [
         ),
         "timestamp": "2025-04-07T10:00:00Z",
         "ground_truth": {
-            "label": "spam",   # typosquatted domain
+            "label": "spam",   
             "route": None, "needs_reply": False,
             "reference_summary": (
                 "Phishing via typosquatted Microsoft domain, fake license renewal, "
@@ -437,11 +422,9 @@ _STOPWORDS = frozenset({
     "my","his","her","please","also","can","all","not","if","so","re",
 })
 
-
 def _tok(text: str) -> List[str]:
     tokens = re.findall(r"[a-z0-9]+", text.lower())
     return [t for t in tokens if t not in _STOPWORDS and len(t) > 1]
-
 
 def _r1f1(hyp: str, ref: str) -> float:
     h, r = set(_tok(hyp)), set(_tok(ref))
@@ -449,29 +432,22 @@ def _r1f1(hyp: str, ref: str) -> float:
         return 0.0001
     ov = len(h & r)
     p, rc = ov / len(h), ov / len(r)
-    return 0.0001 if p + rc == 0 else round(2 * p * rc / (p + rc), 4)
-
+    if p + rc == 0:
+        return 0.0001
+    # CRITICAL FIX 4: Prevent _r1f1 from returning exactly 1.0
+    val = 2 * p * rc / (p + rc)
+    return max(0.0001, min(0.9999, round(val, 4)))
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Environment
 # ──────────────────────────────────────────────────────────────────────────────
 
 class EmailTriageEnvironment:
-    """
-    OpenEnv-compliant email triage environment v3.0.
-
-    ALL reward / task_score values returned are strictly in (0.0, 1.0).
-    This is enforced by routing every value through S() before it leaves
-    the class. S() asserts correctness — any regression raises immediately.
-    """
-
     def __init__(self) -> None:
         self._state = EmailTriageState()
         self._cfg: Dict[str, Any] = {}
         self._emails: List[Dict[str, Any]] = []
         self._label_dist: Dict[str, int] = {}
-
-    # ── Public API ─────────────────────────────────────────────────────────────
 
     def reset(self, task_id: str = "label_only") -> StepResult:
         if task_id not in TASK_CONFIGS:
@@ -483,13 +459,14 @@ class EmailTriageEnvironment:
         self._emails = copy.deepcopy(EMAIL_CORPUS)
         self._label_dist = {}
 
-        initial_score = S(0.5)   # mid-range — strictly in (0,1) immediately
+        initial_score = S(0.5)
 
         self._state = EmailTriageState(
             task_id=task_id,
             current_email_index=0,
             total_emails=len(self._emails),
-            cumulative_reward=0.0,
+            # CRITICAL FIX 1: cumulative_reward can NEVER be 0.0
+            cumulative_reward=0.0001,
             actions_log=[],
             done=False,
             step_count=0,
@@ -498,7 +475,7 @@ class EmailTriageEnvironment:
 
         return StepResult(
             observation=self._obs(),
-            reward=S(0.5),    # neutral reward at reset — strictly in (0,1)
+            reward=S(0.5),
             done=False,
             info={
                 "task_id": task_id,
@@ -509,7 +486,6 @@ class EmailTriageEnvironment:
         )
 
     def step(self, action: EmailTriageAction) -> StepResult:
-        # ── Already done ──────────────────────────────────────────────────────
         if self._state.done:
             safe_reward = S(0.5)
             return StepResult(
@@ -537,19 +513,15 @@ class EmailTriageEnvironment:
                 info={"task_score": self._state.task_score},
             )
 
-        # ── Grade ──────────────────────────────────────────────────────────────
         email_data = self._emails[idx]
         gt = email_data["ground_truth"]
         raw_reward, feedback, grade_info = self._grade(action, gt, email_data)
 
-        # S() maps raw → (0.01, 0.99)
         step_reward = S(raw_reward)
 
-        # Track label diversity
         if action.label and not action.skip:
             self._label_dist[action.label] = self._label_dist.get(action.label, 0) + 1
 
-        # ── Update state ───────────────────────────────────────────────────────
         self._state.actions_log.append({
             "step": self._state.step_count + 1,
             "email_id": email_data["id"],
@@ -566,9 +538,6 @@ class EmailTriageEnvironment:
         self._state.step_count += 1
         self._state.current_email_index += 1
 
-        # ── Live task_score — updated on EVERY step ────────────────────────────
-        # Divide cumulative by total_emails so score grows naturally step-by-step.
-        # S() guarantees it is always strictly in (0.01, 0.99).
         diversity_pen = self._diversity_penalty()
         raw_ts = (self._state.cumulative_reward / self._state.total_emails) - diversity_pen
         live_ts = S(raw_ts)
@@ -578,9 +547,8 @@ class EmailTriageEnvironment:
         if done:
             self._state.done = True
 
-        # ── Build response ─────────────────────────────────────────────────────
         info = dict(grade_info)
-        info["task_score"]        = live_ts           # always in (0,1)
+        info["task_score"]        = live_ts
         info["cumulative_reward"] = round(self._state.cumulative_reward, 4)
         info["step"]              = self._state.step_count
         if done:
@@ -596,21 +564,19 @@ class EmailTriageEnvironment:
     def state(self) -> EmailTriageState:
         return self._state
 
-    # ── Diversity penalty ──────────────────────────────────────────────────────
-
     def _diversity_penalty(self) -> float:
         total = sum(self._label_dist.values())
         if total < 4:
-            return 0.0
+            # CRITICAL FIX 2: Prevent diversity penalty from returning 0.0
+            return 0.0001
         top = max(self._label_dist.values())
         ratio = top / total
         if ratio > 0.80:
             return 0.10
         if ratio > 0.65:
             return 0.05
-        return 0.0
-
-    # ── Observation builder ────────────────────────────────────────────────────
+        # CRITICAL FIX 2: Prevent diversity penalty from returning 0.0
+        return 0.0001
 
     def _obs(
         self,
@@ -642,19 +608,13 @@ class EmailTriageEnvironment:
             last_reward=last_reward or S(0.5),
         )
 
-    # ── Grader ─────────────────────────────────────────────────────────────────
-
     def _grade(
         self,
         action: EmailTriageAction,
         gt: Dict[str, Any],
         email_data: Dict[str, Any],
     ) -> Tuple[float, str, Dict[str, Any]]:
-        """
-        Returns (raw_reward, feedback, info).
-        raw_reward is in [-0.25, 1.0] — caller passes it through S().
-        """
-        # Hard penalties — raw values, S() applied by caller
+        
         if action.skip:
             return -0.05, "skipped (-0.05)", {"skipped": True}
         if gt["label"] == "spam" and action.reply:
@@ -664,30 +624,27 @@ class EmailTriageEnvironment:
         task_id = self._state.task_id
         parts: List[str] = []
         info: Dict[str, Any] = {}
-        total = 0.0
+        # CRITICAL FIX 3: Start total at 0.0001 instead of 0.0
+        total = 0.0001
 
-        # Label
         if "label" in weights:
             ls = self._label_score(action.label, gt["label"])
             total += ls * weights["label"]
             info["label_score"] = ls
             parts.append(f"label={ls:.2f}")
 
-        # Route
         if "route" in weights and task_id in ("label_route", "full_triage", "adversarial_triage"):
             rs = self._route_score(action.route, gt["route"])
             total += rs * weights["route"]
             info["route_score"] = rs
             parts.append(f"route={rs:.2f}")
 
-        # Summary
         if "summary" in weights and task_id in ("full_triage", "adversarial_triage"):
             ss = self._summary_score(action.summary, gt.get("reference_summary", ""))
             total += ss * weights["summary"]
             info["summary_score"] = ss
             parts.append(f"summary={ss:.2f}")
 
-        # Reply
         if "reply" in weights and task_id in ("full_triage", "adversarial_triage"):
             rps = self._reply_score(
                 action.reply, gt, email_data.get("body", ""), gt.get("key_terms", [])
@@ -696,11 +653,8 @@ class EmailTriageEnvironment:
             info["reply_score"] = rps
             parts.append(f"reply={rps:.2f}")
 
-        # Raw total is in [0.0, 1.0] — clamp for safety
         raw = max(0.0001, min(0.9999, total))
         return raw, "scores: " + ", ".join(parts), info
-
-    # ── Sub-scorers (return raw 0.0–1.0, S() applied at step level) ──────────
 
     @staticmethod
     def _label_score(predicted: Optional[str], truth: str) -> float:
@@ -715,7 +669,7 @@ class EmailTriageEnvironment:
 
     @staticmethod
     def _route_score(predicted: Optional[str], truth: Optional[str]) -> float:
-        if truth is None:   # spam — correct to have no route
+        if truth is None:   
             return 0.9999 if (not predicted or not predicted.strip()) else 0.0001
         if not predicted or not predicted.strip():
             return 0.0001
@@ -750,7 +704,9 @@ class EmailTriageEnvironment:
         ref = f"{body} {' '.join(key_terms)}"
         rel = _r1f1(r, ref)
         if len(r) > 700:
-            return max(0.0001, round(min(0.65, 0.35 + 0.3 * min(1.0, rel / 0.20)), 4))
+            # CRITICAL FIX 5: Ensure internal multipliers don't produce 1.0
+            return max(0.0001, round(min(0.65, 0.35 + 0.3 * min(0.9999, rel / 0.20)), 4))
         if rel < 0.10:
             return 0.20
-        return max(0.0001, round(min(0.95, 0.50 + 0.45 * min(1.0, rel / 0.25)), 4))
+        # CRITICAL FIX 5: Ensure internal multipliers don't produce 1.0
+        return max(0.0001, round(min(0.95, 0.50 + 0.45 * min(0.9999, rel / 0.25)), 4))
