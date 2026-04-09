@@ -27,24 +27,38 @@ from server.models import (
 
 # ──────────────────────────────────────────────────────────────────────────────
 # CORE CONTRACT: S(x)
+#
+# Every number that leaves this file as a "score" passes through S().
+# Raw internal range:  [-0.25 .. 1.0]
+# Output range:        (0.01 .. 0.99)  — strictly open both ends
+#
+# This is the SINGLE place that guarantees the Phase 2 constraint.
 # ──────────────────────────────────────────────────────────────────────────────
 
-_S_IN_LO  = -0.25   
-_S_IN_HI  =  1.0    
-_S_OUT_LO =  0.01   
-_S_OUT_HI =  0.99   
+_S_IN_LO  = -0.25   # lowest raw value (worse than spam-reply penalty)
+_S_IN_HI  =  1.0    # highest raw value
+_S_OUT_LO =  0.01   # output floor  (> 0)
+_S_OUT_HI =  0.99   # output ceiling (< 1)
 
 
 def S(raw: float) -> float:
+    """
+    Scale any raw score into the open interval (0.01, 0.99).
+    Preserves ordering: higher raw → higher output.
+    Never returns exactly 0.0 or 1.0.
+    """
     clipped = max(_S_IN_LO, min(_S_IN_HI, float(raw)))
-    t = (clipped - _S_IN_LO) / (_S_IN_HI - _S_IN_LO)   
+    t = (clipped - _S_IN_LO) / (_S_IN_HI - _S_IN_LO)   # 0.0 .. 1.0
     out = _S_OUT_LO + t * (_S_OUT_HI - _S_OUT_LO)
     result = round(out, 6)
+    # Hard safety assertion — will raise immediately if logic is ever wrong
     assert 0.0 < result < 1.0, f"S({raw}) produced {result} which is out of (0,1)"
     return result
 
 
+# Convenience: safe task_score from cumulative sum
 def _running_score(cumulative: float, n_emails: int) -> float:
+    """Compute live task_score from cumulative reward. Always in (0,1)."""
     if n_emails <= 0:
         return S(0.5)
     return S(cumulative / n_emails)
@@ -457,28 +471,4 @@ class EmailTriageEnvironment:
                 f"Valid: {sorted(TASK_CONFIGS.keys())}"
             )
         self._cfg = TASK_CONFIGS[task_id]
-        self._emails = copy.deepcopy(EMAIL_CORPUS)
-        self._label_dist = {}
-
-        initial_score = S(0.5)
-
-        self._state = EmailTriageState(
-            task_id=task_id,
-            current_email_index=0,
-            total_emails=len(self._emails),
-            cumulative_reward=0.0,
-            actions_log=[],
-            done=False,
-            step_count=0,
-            task_score=initial_score,
-        )
-
-        return StepResult(
-            observation=self._obs(),
-            reward=S(0.5),
-            done=False,
-            info={
-                "task_id": task_id,
-                "total_emails": len(self._emails),
-                "difficulty": self._cfg["difficulty"],
-                "task_score": initial_score,
+        sel
