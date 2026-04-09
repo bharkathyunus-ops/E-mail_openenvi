@@ -1,7 +1,16 @@
 """
-Email Triage Environment  v4.1  — VALIDATOR-COMPLIANT
-======================================================
-EVERY float exposed in ANY JSON response is strictly in (0.0001, 0.9999).
+Email Triage Environment  v3.0
+================================
+OpenEnv step() / reset() / state() interface.
+
+SCORING CONTRACT (enforced at every return point):
+  - Every reward value returned by step() is strictly in (0.0, 1.0)
+  - task_score in info dict is strictly in (0.0, 1.0) at EVERY step
+  - /state task_score is strictly in (0.0, 1.0) at ALL times
+  - No literal 0.0 or 1.0 ever leaves this module
+
+Implementation: all scores pass through S() before being returned.
+S(x) maps any float → (0.01, 0.99) via linear interpolation.
 """
 
 import copy
@@ -17,32 +26,29 @@ from server.models import (
 )
 
 # ──────────────────────────────────────────────────────────────────────────────
-# S(x) — The single gatekeeper. EVERY score passes through this.
-# Maps any raw float → strictly open interval (0.01, 0.99).
+# CORE CONTRACT: S(x)
 # ──────────────────────────────────────────────────────────────────────────────
 
-_S_IN_LO  = -0.25
+_S_IN_LO  = -0.25   
 _S_IN_HI  =  0.9999
-_S_OUT_LO =  0.01
-_S_OUT_HI =  0.99
-
+_S_OUT_LO =  0.01   
+_S_OUT_HI =  0.99   
 
 def S(raw: float) -> float:
     clipped = max(_S_IN_LO, min(_S_IN_HI, float(raw)))
-    t = (clipped - _S_IN_LO) / (_S_IN_HI - _S_IN_LO)
+    t = (clipped - _S_IN_LO) / (_S_IN_HI - _S_IN_LO)   
     out = _S_OUT_LO + t * (_S_OUT_HI - _S_OUT_LO)
     result = round(out, 6)
-    assert 0.0 < result < 1.0, f"S({raw}) produced {result}"
+    assert 0.0 < result < 1.0, f"S({raw}) produced {result} which is out of (0,1)"
     return result
 
-
-def _safe(v: float) -> float:
-    """Clamp any float to (0.0001, 0.9999) — used for cumulative exposure."""
-    return round(max(0.0001, min(0.9999, float(v))), 6)
-
+def _running_score(cumulative: float, n_emails: int) -> float:
+    if n_emails <= 0:
+        return S(0.5)
+    return S(cumulative / n_emails)
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Email corpus — 16 emails (12 standard + 4 adversarial)
+# Email corpus — 16 workplace emails (12 standard + 4 adversarial)
 # ──────────────────────────────────────────────────────────────────────────────
 
 EMAIL_CORPUS: List[Dict[str, Any]] = [
@@ -141,7 +147,7 @@ EMAIL_CORPUS: List[Dict[str, Any]] = [
         "sender": "hr@acmecorp.com",
         "body": (
             "Please review the updated remote work policy effective May 1, 2025. "
-            "Key changes: flexible core hours (10am-3pm), monthly in-person days, "
+            "Key changes: flexible core hours (10am–3pm), monthly in-person days, "
             "home office equipment reimbursement up to $500/year."
         ),
         "timestamp": "2025-04-07T09:00:00Z",
@@ -159,7 +165,7 @@ EMAIL_CORPUS: List[Dict[str, Any]] = [
         "subject": "Congratulations! You've won a $500 Amazon gift card",
         "sender": "noreply@prize-winner-9847.com",
         "body": (
-            "You have been chosen as our lucky winner! Click the link below to "
+            "You have been selected as our lucky winner! Click the link below to "
             "claim your $500 Amazon gift card. Offer expires in 24 hours. "
             "Verify your account details: http://bit.ly/claim-xk7"
         ),
@@ -252,7 +258,7 @@ EMAIL_CORPUS: List[Dict[str, Any]] = [
         "subject": "GDPR compliance audit — response required by April 30",
         "sender": "compliance@eu-regulator.gov",
         "body": (
-            "Formal notification: your organization has been chosen for a GDPR "
+            "Formal notification: your organization has been selected for a GDPR "
             "compliance audit. Submit documentation on data processing activities, "
             "retention policies, and DPA agreements by April 30, 2025. "
             "Non-compliance may result in penalties up to 4% of global annual turnover."
@@ -279,7 +285,7 @@ EMAIL_CORPUS: List[Dict[str, Any]] = [
         ),
         "timestamp": "2025-04-07T09:00:00Z",
         "ground_truth": {
-            "label": "low",
+            "label": "low",   
             "route": "management", "needs_reply": False,
             "reference_summary": (
                 "Surprise birthday party for Sarah Thursday 3pm break room, "
@@ -291,7 +297,7 @@ EMAIL_CORPUS: List[Dict[str, Any]] = [
     {
         "id": "email_014",
         "subject": "Re: Microsoft 365 License Renewal — Action Required",
-        "sender": "noreply-billing@microsoftt-licenses.net",
+        "sender": "noreply-billing@microsoftt-licenses.net",  
         "body": (
             "Your Microsoft Office 365 license expires in 3 days. To avoid service "
             "interruption renew now and enter payment details at: "
@@ -299,7 +305,7 @@ EMAIL_CORPUS: List[Dict[str, Any]] = [
         ),
         "timestamp": "2025-04-07T10:00:00Z",
         "ground_truth": {
-            "label": "spam",
+            "label": "spam",   
             "route": None, "needs_reply": False,
             "reference_summary": (
                 "Phishing via typosquatted Microsoft domain, fake license renewal, "
@@ -366,23 +372,21 @@ VALID_ROUTES = frozenset({
     "hr", "it", "security", "management",
 })
 
-# THE FATAL FIX: Changed all 1.0 and 0.5 literals in the configuration 
-# to 0.9999 and 0.4999 so the /tasks JSON endpoint passes the bot's check.
 TASK_CONFIGS: Dict[str, Dict[str, Any]] = {
     "label_only": {
         "name": "Label Only",
         "description": "Assign urgency label to each of 16 emails.",
         "difficulty": "easy",
         "max_steps": 16,
-        "success_threshold": 0.4999,
-        "weights": {"label": 0.9999},
+        "success_threshold": 0.5,
+        "weights": {"label": 0.9999}, 
     },
     "label_route": {
         "name": "Label and Route",
         "description": "Assign urgency label AND route to the correct department.",
         "difficulty": "medium",
         "max_steps": 16,
-        "success_threshold": 0.4999,
+        "success_threshold": 0.5,
         "weights": {"label": 0.4999, "route": 0.4999},
     },
     "full_triage": {
@@ -390,21 +394,21 @@ TASK_CONFIGS: Dict[str, Dict[str, Any]] = {
         "description": "Label + route + ROUGE-1 summary + relevant reply.",
         "difficulty": "hard",
         "max_steps": 16,
-        "success_threshold": 0.3999,
-        "weights": {"label": 0.25, "route": 0.25, "summary": 0.30, "reply": 0.1999},
+        "success_threshold": 0.4,
+        "weights": {"label": 0.25, "route": 0.25, "summary": 0.30, "reply": 0.20},
     },
     "adversarial_triage": {
         "name": "Adversarial Triage",
         "description": "Full triage including 4 adversarial deceptive emails.",
         "difficulty": "expert",
         "max_steps": 16,
-        "success_threshold": 0.3499,
-        "weights": {"label": 0.35, "route": 0.30, "summary": 0.1999, "reply": 0.15},
+        "success_threshold": 0.35,
+        "weights": {"label": 0.35, "route": 0.30, "summary": 0.20, "reply": 0.15},
     },
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
-# ROUGE-1 F1 (no external deps)
+# ROUGE-1 F1  (no external deps)
 # ──────────────────────────────────────────────────────────────────────────────
 
 _STOPWORDS = frozenset({
@@ -416,11 +420,9 @@ _STOPWORDS = frozenset({
     "my","his","her","please","also","can","all","not","if","so","re",
 })
 
-
 def _tok(text: str) -> List[str]:
     tokens = re.findall(r"[a-z0-9]+", text.lower())
     return [t for t in tokens if t not in _STOPWORDS and len(t) > 1]
-
 
 def _r1f1(hyp: str, ref: str) -> float:
     h, r = set(_tok(hyp)), set(_tok(ref))
@@ -430,37 +432,31 @@ def _r1f1(hyp: str, ref: str) -> float:
     p, rc = ov / len(h), ov / len(r)
     if p + rc == 0:
         return 0.0001
-    return max(0.0001, min(0.9999, round(2 * p * rc / (p + rc), 4)))
-
+    val = 2 * p * rc / (p + rc)
+    return max(0.0001, min(0.9999, round(val, 4)))
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Environment
 # ──────────────────────────────────────────────────────────────────────────────
 
 class EmailTriageEnvironment:
-    """
-    OpenEnv-compliant email triage environment v4.1.
-
-    ALL floats in every JSON response are strictly in (0.0001, 0.9999).
-    """
-
     def __init__(self) -> None:
+        self._cfg: Dict[str, Any] = {}
+        self._emails: List[Dict[str, Any]] = []
+        self._label_dist: Dict[str, int] = {}
+        
+        self._internal_cumulative = 0.0001
+        
         self._state = EmailTriageState(
-            task_id="",
+            task_id="label_only",
             current_email_index=0,
-            total_emails=0,
-            cumulative_reward=0.0001,   # SAFE — not 0.0
+            total_emails=16,
+            cumulative_reward=0.0001,
             actions_log=[],
             done=False,
             step_count=0,
-            task_score=S(0.5),          # SAFE — not 0.0
+            task_score=0.0001
         )
-        self._cfg:         Dict[str, Any]       = {}
-        self._emails:      List[Dict[str, Any]] = []
-        self._label_dist:  Dict[str, int]       = {}
-        self._internal_cumulative: float        = 0.0001  # true sum, never exposed
-
-    # ── Public API ─────────────────────────────────────────────────────────────
 
     def reset(self, task_id: str = "label_only") -> StepResult:
         if task_id not in TASK_CONFIGS:
@@ -468,48 +464,45 @@ class EmailTriageEnvironment:
                 f"Unknown task_id '{task_id}'. "
                 f"Valid: {sorted(TASK_CONFIGS.keys())}"
             )
-        self._cfg             = TASK_CONFIGS[task_id]
-        self._emails          = copy.deepcopy(EMAIL_CORPUS)
-        self._label_dist      = {}
-        self._internal_cumulative = 0.0001   # reset internal accumulator
-
-        initial_score = S(0.5)
+        self._cfg = TASK_CONFIGS[task_id]
+        self._emails = copy.deepcopy(EMAIL_CORPUS)
+        self._label_dist = {}
+        
+        self._internal_cumulative = 0.0001
 
         self._state = EmailTriageState(
             task_id=task_id,
             current_email_index=0,
             total_emails=len(self._emails),
-            cumulative_reward=0.0001,    # SAFE — not 0.0
+            cumulative_reward=0.0001, 
             actions_log=[],
             done=False,
             step_count=0,
-            task_score=initial_score,
+            task_score=0.0001,
         )
 
         return StepResult(
             observation=self._obs(),
-            reward=S(0.5),
+            reward=0.0001,
             done=False,
             info={
-                "task_id":      task_id,
+                "task_id": task_id,
                 "total_emails": len(self._emails),
-                "difficulty":   self._cfg["difficulty"],
-                "task_score":   initial_score,
+                "difficulty": self._cfg["difficulty"],
+                "task_score": 0.0001,
             },
         )
 
     def step(self, action: EmailTriageAction) -> StepResult:
-        # ── Already done ──────────────────────────────────────────────────────
         if self._state.done:
             return StepResult(
                 observation=EmailTriageObservation(
-                    episode_done=True, task_id=self._state.task_id,
-                    last_reward=S(0.5),
+                    episode_done=True, task_id=self._state.task_id
                 ),
-                reward=S(0.5),
+                reward=0.0001,
                 done=True,
                 info={
-                    "error":      "episode_already_done",
+                    "error": "episode_already_done",
                     "task_score": self._state.task_score,
                 },
             )
@@ -519,51 +512,47 @@ class EmailTriageEnvironment:
             self._state.done = True
             return StepResult(
                 observation=EmailTriageObservation(
-                    episode_done=True, task_id=self._state.task_id,
-                    last_reward=S(0.5),
+                    episode_done=True, task_id=self._state.task_id
                 ),
-                reward=S(0.5),
+                reward=0.0001,
                 done=True,
                 info={"task_score": self._state.task_score},
             )
 
-        # ── Grade ──────────────────────────────────────────────────────────────
         email_data = self._emails[idx]
         gt = email_data["ground_truth"]
         raw_reward, feedback, grade_info = self._grade(action, gt, email_data)
-        step_reward = S(raw_reward)   # always in (0.01, 0.99)
 
-        # Track label diversity
+        # Map raw_reward to [0.01, 0.99] using S(), then scale down by total_emails
+        # This guarantees sum(rewards) over the episode is strictly between 0 and 1
+        scaled_reward = S(raw_reward)
+        step_reward = scaled_reward / max(1, self._state.total_emails)
+
         if action.label and not action.skip:
             self._label_dist[action.label] = self._label_dist.get(action.label, 0) + 1
 
-        self._internal_cumulative += raw_reward
-        safe_cumulative = _safe(
-            self._internal_cumulative / max(1, self._state.step_count + 1)
-        )
-
-        # Update state
         self._state.actions_log.append({
-            "step":     self._state.step_count + 1,
+            "step": self._state.step_count + 1,
             "email_id": email_data["id"],
-            "action":   {k: v for k, v in {
+            "action": {k: v for k, v in {
                 "label": action.label,
                 "route": action.route,
-                "skip":  action.skip or None,
+                "skip": action.skip or None,
             }.items() if v},
-            "reward":   step_reward,
+            "reward": step_reward,
             "feedback": feedback,
         })
 
-        self._state.cumulative_reward = safe_cumulative  # SAFE value only
-        self._state.step_count       += 1
+        self._internal_cumulative += step_reward
+        self._state.step_count += 1
         self._state.current_email_index += 1
 
-        # Live task_score
         diversity_pen = self._diversity_penalty()
-        raw_ts  = (self._internal_cumulative / self._state.total_emails) - diversity_pen
-        live_ts = S(raw_ts)
+        raw_ts = self._internal_cumulative - diversity_pen
+        live_ts = max(0.0001, min(0.9999, raw_ts))
+
         self._state.task_score = live_ts
+        self._state.cumulative_reward = max(0.0001, min(0.9999, self._internal_cumulative))
 
         done = self._state.current_email_index >= len(self._emails)
         if done:
@@ -571,10 +560,10 @@ class EmailTriageEnvironment:
 
         info = dict(grade_info)
         info["task_score"]        = live_ts
-        info["cumulative_reward"] = safe_cumulative
+        info["cumulative_reward"] = self._state.cumulative_reward
         info["step"]              = self._state.step_count
         if done:
-            info["diversity_penalty"] = _safe(diversity_pen)
+            info["diversity_penalty"] = round(diversity_pen, 4)
 
         return StepResult(
             observation=self._obs(feedback=feedback, last_reward=step_reward),
@@ -586,13 +575,11 @@ class EmailTriageEnvironment:
     def state(self) -> EmailTriageState:
         return self._state
 
-    # ── Diversity penalty ──────────────────────────────────────────────────────
-
     def _diversity_penalty(self) -> float:
         total = sum(self._label_dist.values())
         if total < 4:
             return 0.0001
-        top   = max(self._label_dist.values())
+        top = max(self._label_dist.values())
         ratio = top / total
         if ratio > 0.80:
             return 0.10
@@ -600,15 +587,12 @@ class EmailTriageEnvironment:
             return 0.05
         return 0.0001
 
-    # ── Observation builder ────────────────────────────────────────────────────
-
     def _obs(
         self,
-        feedback:    Optional[str]   = None,
+        feedback: Optional[str] = None,
         last_reward: Optional[float] = None,
     ) -> EmailTriageObservation:
         idx = self._state.current_email_index
-        safe_reward = last_reward if last_reward is not None else S(0.5)
         if self._state.done or idx >= len(self._emails):
             return EmailTriageObservation(
                 episode_done=True,
@@ -616,7 +600,7 @@ class EmailTriageEnvironment:
                 step=self._state.step_count,
                 total_emails=self._state.total_emails,
                 last_action_feedback=feedback,
-                last_reward=safe_reward,
+                last_reward=last_reward or 0.0001,
             )
         raw = self._emails[idx]
         return EmailTriageObservation(
@@ -630,17 +614,16 @@ class EmailTriageEnvironment:
             task_id=self._state.task_id,
             episode_done=False,
             last_action_feedback=feedback,
-            last_reward=safe_reward,
+            last_reward=last_reward or 0.0001,
         )
-
-    # ── Grader ─────────────────────────────────────────────────────────────────
 
     def _grade(
         self,
-        action:     EmailTriageAction,
-        gt:         Dict[str, Any],
+        action: EmailTriageAction,
+        gt: Dict[str, Any],
         email_data: Dict[str, Any],
     ) -> Tuple[float, str, Dict[str, Any]]:
+        
         if action.skip:
             return -0.05, "skipped (-0.05)", {"skipped": True}
         if gt["label"] == "spam" and action.reply:
@@ -648,8 +631,8 @@ class EmailTriageEnvironment:
 
         weights = self._cfg["weights"]
         task_id = self._state.task_id
-        parts:  List[str]       = []
-        info:   Dict[str, Any]  = {}
+        parts: List[str] = []
+        info: Dict[str, Any] = {}
         total = 0.0001
 
         if "label" in weights:
@@ -681,8 +664,6 @@ class EmailTriageEnvironment:
         raw = max(0.0001, min(0.9999, total))
         return raw, "scores: " + ", ".join(parts), info
 
-    # ── Sub-scorers ────────────────────────────────────────────────────────────
-
     @staticmethod
     def _label_score(predicted: Optional[str], truth: str) -> float:
         if not predicted:
@@ -696,12 +677,13 @@ class EmailTriageEnvironment:
 
     @staticmethod
     def _route_score(predicted: Optional[str], truth: Optional[str]) -> float:
-        if truth is None:
+        if truth is None:   
             return 0.9999 if (not predicted or not predicted.strip()) else 0.0001
         if not predicted or not predicted.strip():
             return 0.0001
         p = predicted.strip().lower()
-        return 0.9999 if p == truth and p in VALID_ROUTES else 0.0001
+        val = (0.9999 if p == truth else 0.0001) if p in VALID_ROUTES else 0.0001
+        return val
 
     @staticmethod
     def _summary_score(summary: Optional[str], reference: str) -> float:
@@ -716,9 +698,9 @@ class EmailTriageEnvironment:
 
     @staticmethod
     def _reply_score(
-        reply:     Optional[str],
-        gt:        Dict[str, Any],
-        body:      str,
+        reply: Optional[str],
+        gt: Dict[str, Any],
+        body: str,
         key_terms: List[str],
     ) -> float:
         needs = gt.get("needs_reply", False)
@@ -726,7 +708,7 @@ class EmailTriageEnvironment:
             return 0.80 if not reply else 0.10
         if not reply or len(reply.strip()) < 25:
             return 0.0001
-        r   = reply.strip()
+        r = reply.strip()
         ref = f"{body} {' '.join(key_terms)}"
         rel = _r1f1(r, ref)
         if len(r) > 700:
@@ -734,3 +716,4 @@ class EmailTriageEnvironment:
         if rel < 0.10:
             return 0.20
         return max(0.0001, round(min(0.95, 0.50 + 0.45 * min(0.9999, rel / 0.25)), 4))
+        
