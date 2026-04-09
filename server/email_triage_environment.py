@@ -565,7 +565,7 @@ class EmailTriageEnvironment:
             actions_log=[],
             done=False,
             step_count=0,
-            task_score=0.0,
+            task_score=0.5,   # mid-range until first step computes live score
         )
 
         return StepResult(
@@ -586,9 +586,10 @@ class EmailTriageEnvironment:
                 observation=EmailTriageObservation(
                     episode_done=True, task_id=self._state.task_id
                 ),
-                reward=0.0,
+                reward=_clamp(0.0),   # never return literal 0.0
                 done=True,
-                info={"error": "episode_already_done"},
+                info={"error": "episode_already_done",
+                      "task_score": self._state.task_score},
             )
 
         idx = self._state.current_email_index
@@ -598,9 +599,9 @@ class EmailTriageEnvironment:
                 observation=EmailTriageObservation(
                     episode_done=True, task_id=self._state.task_id
                 ),
-                reward=0.0,
+                reward=_clamp(0.0),   # never return literal 0.0
                 done=True,
-                info={},
+                info={"task_score": self._state.task_score},
             )
 
         email_data = self._emails[idx]
@@ -629,13 +630,17 @@ class EmailTriageEnvironment:
         self._state.current_email_index += 1
 
         done = self._state.current_email_index >= len(self._emails)
+
+        # Compute live running task_score on EVERY step (not just episode end).
+        # Divides cumulative reward by total_emails so score grows step by step.
+        # This ensures info["task_score"] and /score endpoint are always in (0,1).
+        diversity_penalty = self._diversity_deduction()
+        raw_running = self._state.cumulative_reward / self._state.total_emails
+        live_score = round(max(0.01, min(0.99, raw_running - diversity_penalty)), 6)
+        self._state.task_score = live_score
+
         if done:
             self._state.done = True
-            raw_score = self._state.cumulative_reward / len(self._emails)
-            diversity_penalty = self._diversity_deduction()
-            self._state.task_score = round(
-                max(0.01, min(0.99, raw_score - diversity_penalty)), 6
-            )
             info["diversity_penalty"] = round(diversity_penalty, 4)
 
         obs = self._build_observation(last_feedback=feedback, last_reward=reward)
