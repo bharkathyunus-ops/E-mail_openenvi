@@ -26,6 +26,28 @@ from server.models import (
     StepResult,
 )
 
+
+# ── Reward clamping — Phase 2 requirement ─────────────────────────────────────
+# Scores must be strictly between 0 and 1: (0.0, 1.0) open interval.
+# We map the raw reward range [-0.20, +1.0] linearly into [0.01, 0.99].
+# This preserves all relative ordering and partial-credit semantics while
+# satisfying the validator constraint that no score equals exactly 0.0 or 1.0.
+
+_RAW_MIN = -0.20   # worst possible raw reward (spam reply penalty)
+_RAW_MAX = 1.00    # best possible raw reward (perfect action)
+_OUT_MIN = 0.01    # output floor (strictly > 0)
+_OUT_MAX = 0.99    # output ceiling (strictly < 1)
+
+
+def _clamp(raw: float) -> float:
+    """
+    Linearly map raw reward from [-0.20, 1.00] → (0.01, 0.99).
+    Ensures scores are strictly within (0, 1) as required by Phase 2 validation.
+    """
+    clipped = max(_RAW_MIN, min(_RAW_MAX, raw))
+    normalised = (clipped - _RAW_MIN) / (_RAW_MAX - _RAW_MIN)   # 0.0 – 1.0
+    return round(_OUT_MIN + normalised * (_OUT_MAX - _OUT_MIN), 4)
+
 # ── Email Corpus (16 workplace emails, including 4 adversarial edge cases) ─────
 
 EMAIL_CORPUS: List[Dict[str, Any]] = [
@@ -612,7 +634,7 @@ class EmailTriageEnvironment:
             raw_score = self._state.cumulative_reward / len(self._emails)
             diversity_penalty = self._diversity_deduction()
             self._state.task_score = round(
-                max(0.0, min(1.0, raw_score - diversity_penalty)), 6
+                max(0.01, min(0.99, raw_score - diversity_penalty)), 6
             )
             info["diversity_penalty"] = round(diversity_penalty, 4)
 
@@ -697,9 +719,9 @@ class EmailTriageEnvironment:
     ) -> Tuple[float, str, Dict[str, Any]]:
         # Hard penalties
         if action.skip:
-            return -0.05, "email skipped (penalty -0.05)", {"skipped": True}
+            return _clamp(-0.05), "email skipped (penalty -0.05)", {"skipped": True}
         if gt["label"] == "spam" and action.reply:
-            return -0.20, "replied to spam (penalty -0.20)", {"spam_reply_penalty": True}
+            return _clamp(-0.20), "replied to spam (penalty -0.20)", {"spam_reply_penalty": True}
 
         task_id = self._state.task_id
         weights = self._task_config["weights"]
@@ -734,7 +756,7 @@ class EmailTriageEnvironment:
             info["reply_score"] = s
             parts.append(f"reply={s:.2f}")
 
-        reward = round(min(max(total, 0.0), 1.0), 4)
+        reward = _clamp(min(max(total, 0.0), 1.0))
         return reward, "scores: " + ", ".join(parts), info
 
     # ── Sub-scorers ────────────────────────────────────────────────────────────
