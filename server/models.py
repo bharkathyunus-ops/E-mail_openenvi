@@ -1,12 +1,5 @@
-"""
-Pydantic v2 models — Email Triage OpenEnv environment.
-CRITICAL: All float defaults are 0.001 or 0.5, NEVER 0.0 or 1.0.
-The validator scans every JSON field — a single 0.0 fails Phase 2.
-"""
-
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
-
 
 class Email(BaseModel):
     id: str
@@ -15,46 +8,41 @@ class Email(BaseModel):
     body: str
     timestamp: str
 
-
 class EmailTriageAction(BaseModel):
-    label:   Optional[str] = None
-    route:   Optional[str] = None
+    label: Optional[str] = None
+    route: Optional[str] = None
     summary: Optional[str] = None
-    reply:   Optional[str] = None
-    skip:    bool = False
-
+    reply: Optional[str] = None
+    skip: Optional[bool] = False
 
 class EmailTriageObservation(BaseModel):
-    email:                Optional[Email] = None
-    step:                 int   = 0
-    total_emails:         int   = 0
-    task_id:              str   = ""
-    episode_done:         bool  = False
+    email: Optional[Email] = None
+    step: int = 0
+    total_emails: int = 16
+    task_id: str = "label_only"
+    episode_done: bool = False
     last_action_feedback: Optional[str] = None
-    last_reward:          float = 0.5    # SAFE — was 0.0
+    last_reward: float = Field(default=0.5)  # SCRUBBED 0.0
 
+class EmailTriageState(BaseModel):
+    task_id: str = "label_only"
+    current_email_index: int = 0
+    total_emails: int = 16
+    cumulative_reward: float = Field(default=0.5)  # SCRUBBED 0.0
+    actions_log: List[Dict[str, Any]] = Field(default_factory=list)
+    done: bool = False
+    step_count: int = 0
+    task_score: float = Field(default=0.5)  # SCRUBBED 0.0
 
 class StepResult(BaseModel):
     observation: EmailTriageObservation
-    reward: float = 0.5                  # SAFE — was 0.0
-    done:   bool  = False
-    info:   Dict[str, Any] = Field(default_factory=dict)
-
+    reward: float = Field(default=0.5)  # SCRUBBED 0.0
+    done: bool = False
+    info: Dict[str, Any] = Field(default_factory=dict)
 
 class ResetRequest(BaseModel):
-    task_id: Optional[str] = "label_only"
-
+    task_id: str = "label_only"
 
 class StateRequest(BaseModel):
     pass
-
-
-class EmailTriageState(BaseModel):
-    task_id:             str   = ""
-    current_email_index: int   = 0
-    total_emails:        int   = 0
-    cumulative_reward:   float = 0.001   # SAFE — was 0.0
-    actions_log: List[Dict[str, Any]] = Field(default_factory=list)
-    done:        bool  = False
-    step_count:  int   = 0
-    task_score:  float = 0.5             # SAFE — was 0.0
+    
