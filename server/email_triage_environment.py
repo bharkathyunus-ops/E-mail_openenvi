@@ -16,6 +16,11 @@ from server.models import (
     StepResult,
 )
 
+# --- FLAWLESS SCORE CLAMPER ---
+# This guarantees no math combination will ever hit <=0.0 or >=1.0
+def clamp_score(score: float) -> float:
+    return max(0.001, min(0.999, float(score)))
+
 EMAIL_CORPUS: List[Dict[str, Any]] =[
     {
         "id": "email_001",
@@ -315,7 +320,7 @@ class EmailTriageEnvironment:
                 "task_id": task_id,
                 "total_emails": len(self._emails),
                 "difficulty": self._cfg["difficulty"],
-                "task_score": 0.05,
+                "task_score": clamp_score(0.05),
             },
         )
 
@@ -324,7 +329,7 @@ class EmailTriageEnvironment:
             if self._state.done:
                 return StepResult(
                     observation=EmailTriageObservation(episode_done=True, task_id=self._state.task_id),
-                    reward=0.05, done=True, info={"error": "episode_already_done", "task_score": self._state.task_score}
+                    reward=clamp_score(0.05), done=True, info={"error": "episode_already_done", "task_score": clamp_score(self._state.task_score)}
                 )
 
             idx = self._state.current_email_index
@@ -332,14 +337,14 @@ class EmailTriageEnvironment:
                 self._state.done = True
                 return StepResult(
                     observation=EmailTriageObservation(episode_done=True, task_id=self._state.task_id),
-                    reward=0.05, done=True, info={"task_score": self._state.task_score}
+                    reward=clamp_score(0.05), done=True, info={"task_score": clamp_score(self._state.task_score)}
                 )
 
             email_data = self._emails[idx]
             gt = email_data.get("ground_truth", {})
             
             raw_reward, feedback, grade_info = self._grade(action, gt, email_data)
-            step_reward = round(max(0.011, raw_reward / max(1, self._state.total_emails)), 4)
+            step_reward = clamp_score(round(max(0.011, raw_reward / max(1, self._state.total_emails)), 4))
 
             # Crash prevention: use getattr in case fields are missing
             act_label = getattr(action, "label", None)
@@ -363,7 +368,7 @@ class EmailTriageEnvironment:
 
             diversity_pen = self._diversity_penalty()
             avg_score = self._internal_cumulative / max(1, self._state.step_count)
-            live_ts = round(max(0.05, min(0.95, avg_score - diversity_pen)), 4)
+            live_ts = clamp_score(round(max(0.05, min(0.95, avg_score - diversity_pen)), 4))
 
             self._state.task_score = live_ts
             self._state.cumulative_reward = live_ts
@@ -372,12 +377,19 @@ class EmailTriageEnvironment:
             if done:
                 self._state.done = True
 
-            info = dict(grade_info)
+            # Clamping the items in info dictionary as well just to be totally safe
+            info = {}
+            for k, v in grade_info.items():
+                if isinstance(v, (int, float)) and not isinstance(v, bool):
+                    info[k] = clamp_score(v)
+                else:
+                    info[k] = v
+            
             info["task_score"] = live_ts
             info["cumulative_reward"] = live_ts
             info["step"] = self._state.step_count
             if done:
-                info["diversity_penalty"] = round(diversity_pen, 4)
+                info["diversity_penalty"] = clamp_score(round(diversity_pen, 4))
 
             return StepResult(
                 observation=self._obs(feedback=feedback, last_reward=step_reward),
@@ -387,7 +399,7 @@ class EmailTriageEnvironment:
             )
         except Exception as e:
             # Absolute crash prevention fallback
-            fallback_score = 0.05
+            fallback_score = clamp_score(0.05)
             self._state.task_score = fallback_score
             return StepResult(
                 observation=EmailTriageObservation(episode_done=True, task_id=self._state.task_id),
@@ -395,7 +407,11 @@ class EmailTriageEnvironment:
             )
 
     def state(self) -> EmailTriageState:
-        return self._state
+        # Clamping state outputs for safety
+        clamped_state = copy.deepcopy(self._state)
+        clamped_state.task_score = clamp_score(self._state.task_score)
+        clamped_state.cumulative_reward = clamp_score(self._state.cumulative_reward)
+        return clamped_state
 
     def _diversity_penalty(self) -> float:
         total = sum(self._label_dist.values())
@@ -411,7 +427,7 @@ class EmailTriageEnvironment:
         if self._state.done or idx >= len(self._emails):
             return EmailTriageObservation(
                 episode_done=True, task_id=self._state.task_id, step=self._state.step_count,
-                total_emails=self._state.total_emails, last_action_feedback=feedback, last_reward=last_reward or 0.05,
+                total_emails=self._state.total_emails, last_action_feedback=feedback, last_reward=clamp_score(last_reward or 0.05),
             )
         raw = self._emails[idx]
         return EmailTriageObservation(
@@ -421,7 +437,7 @@ class EmailTriageEnvironment:
             ),
             step=self._state.step_count, total_emails=self._state.total_emails,
             task_id=self._state.task_id, episode_done=False,
-            last_action_feedback=feedback, last_reward=last_reward or 0.05,
+            last_action_feedback=feedback, last_reward=clamp_score(last_reward or 0.05),
         )
 
     def _grade(self, action: EmailTriageAction, gt: Dict[str, Any], email_data: Dict[str, Any]) -> Tuple[float, str, Dict[str, Any]]:
@@ -445,25 +461,25 @@ class EmailTriageEnvironment:
         if "label" in weights:
             ls = self._label_score(act_label, gt.get("label", ""))
             total += ls * weights["label"]
-            info["label_score"] = ls
+            info["label_score"] = clamp_score(ls)
             parts.append(f"label={ls:.2f}")
 
         if "route" in weights and task_id in ("label_route", "full_triage", "adversarial_triage"):
             rs = self._route_score(act_route, gt.get("route"))
             total += rs * weights["route"]
-            info["route_score"] = rs
+            info["route_score"] = clamp_score(rs)
             parts.append(f"route={rs:.2f}")
 
         if "summary" in weights and task_id in ("full_triage", "adversarial_triage"):
             ss = self._summary_score(act_summary, gt.get("reference_summary", ""))
             total += ss * weights["summary"]
-            info["summary_score"] = ss
+            info["summary_score"] = clamp_score(ss)
             parts.append(f"summary={ss:.2f}")
 
         if "reply" in weights and task_id in ("full_triage", "adversarial_triage"):
             rps = self._reply_score(act_reply, gt, email_data.get("body", ""), gt.get("key_terms", []))
             total += rps * weights["reply"]
-            info["reply_score"] = rps
+            info["reply_score"] = clamp_score(rps)
             parts.append(f"reply={rps:.2f}")
 
         raw = round(max(0.05, min(0.95, total)), 4)
