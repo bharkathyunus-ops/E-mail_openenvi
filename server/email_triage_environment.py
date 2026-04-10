@@ -303,7 +303,6 @@ def _r1f1(hyp: str, ref: str) -> float:
 
 class EmailTriageEnvironment:
     def __init__(self) -> None:
-        # ANTI-CRASH FIX: Fully initialize on boot so a premature /step doesn't 500 Error
         self._cfg = TASK_CONFIGS["label_only"]
         self._emails = copy.deepcopy(EMAIL_CORPUS)
         self._label_dist: Dict[str, int] = {}
@@ -357,7 +356,6 @@ class EmailTriageEnvironment:
                 },
             )
         except Exception as e:
-            # ANTI-CRASH FALLBACK
             safe = S(0.5)
             return StepResult(
                 observation=self._obs(feedback=f"Reset Error: {str(e)}", last_reward=safe),
@@ -392,8 +390,9 @@ class EmailTriageEnvironment:
 
             step_reward = S(raw_reward)
 
-            if action.label and not getattr(action, 'skip', False):
-                self._label_dist[action.label] = self._label_dist.get(action.label, 0) + 1
+            if getattr(action, 'label', None) and not getattr(action, 'skip', False):
+                lbl = action.label
+                self._label_dist[lbl] = self._label_dist.get(lbl, 0) + 1
 
             # Log action safely
             log_action = {}
@@ -437,7 +436,6 @@ class EmailTriageEnvironment:
             )
             
         except Exception as e:
-            # ANTI-CRASH FALLBACK: If the bot sends a bad payload, we NEVER 500 error!
             safe = S(0.5)
             self._state.done = True 
             return StepResult(
@@ -533,4 +531,4 @@ class EmailTriageEnvironment:
         rel = _r1f1(reply.strip(), f"{body} {' '.join(key_terms)}")
         if len(reply.strip()) > 700: return max(0.05, min(0.65, 0.35 + 0.3 * min(0.95, rel / 0.20)))
         if rel < 0.10: return 0.20
-        return max(0.05, min(0.95, 0.50 + 0.45 * min(0.95, rel / 0.25)))  good ? 
+        return max(0.05, min(0.95, 0.50 + 0.45 * min(0.95, rel / 0.25)))
