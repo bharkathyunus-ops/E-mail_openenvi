@@ -21,7 +21,7 @@ from server.models import (
 # ──────────────────────────────────────────────────────────────────────────────
 
 _S_IN_LO  = -0.25   
-_S_IN_HI  =  0.9999    
+_S_IN_HI  =  0.95    
 _S_OUT_LO =  0.01   
 _S_OUT_HI =  0.99   
 
@@ -255,11 +255,11 @@ VALID_ROUTES = frozenset({"engineering", "support", "legal", "finance", "hr", "i
 TASK_CONFIGS: Dict[str, Dict[str, Any]] = {
     "label_only": {
         "name": "Label Only", "difficulty": "easy", "max_steps": 16,
-        "success_threshold": 0.5, "weights": {"label": 0.9999}, 
+        "success_threshold": 0.5, "weights": {"label": 0.95}, 
     },
     "label_route": {
         "name": "Label and Route", "difficulty": "medium", "max_steps": 16,
-        "success_threshold": 0.5, "weights": {"label": 0.4999, "route": 0.4999},
+        "success_threshold": 0.5, "weights": {"label": 0.475, "route": 0.475},
     },
     "full_triage": {
         "name": "Full Triage", "difficulty": "hard", "max_steps": 16,
@@ -291,11 +291,11 @@ def _tok(text: str) -> List[str]:
 
 def _r1f1(hyp: str, ref: str) -> float:
     h, r = set(_tok(hyp)), set(_tok(ref))
-    if not h or not r: return 0.0001
+    if not h or not r: return 0.05
     ov = len(h & r)
     p, rc = ov / len(h), ov / len(r)
-    if p + rc == 0: return 0.0001
-    return max(0.0001, min(0.9999, round(2 * p * rc / (p + rc), 4)))
+    if p + rc == 0: return 0.05
+    return max(0.05, min(0.95, round(2 * p * rc / (p + rc), 4)))
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Environment
@@ -307,7 +307,7 @@ class EmailTriageEnvironment:
         self._cfg = TASK_CONFIGS["label_only"]
         self._emails = copy.deepcopy(EMAIL_CORPUS)
         self._label_dist: Dict[str, int] = {}
-        self._internal_cumulative = 0.0001
+        self._internal_cumulative = 0.01
         
         safe_boot = S(0.5)
         self._state = EmailTriageState(
@@ -329,7 +329,7 @@ class EmailTriageEnvironment:
             self._cfg = TASK_CONFIGS[task_id]
             self._emails = copy.deepcopy(EMAIL_CORPUS)
             self._label_dist = {}
-            self._internal_cumulative = 0.0001
+            self._internal_cumulative = 0.01
 
             safe_start = S(0.5)
 
@@ -427,7 +427,7 @@ class EmailTriageEnvironment:
             info["task_score"] = live_ts
             info["cumulative_reward"] = self._state.cumulative_reward 
             info["step"] = self._state.step_count
-            if done: info["diversity_penalty"] = max(0.0001, round(diversity_pen, 4))
+            if done: info["diversity_penalty"] = max(0.01, round(diversity_pen, 4))
 
             return StepResult(
                 observation=self._obs(feedback=feedback, last_reward=step_reward),
@@ -452,11 +452,11 @@ class EmailTriageEnvironment:
 
     def _diversity_penalty(self) -> float:
         total = sum(self._label_dist.values())
-        if total < 4: return 0.0001
+        if total < 4: return 0.01
         ratio = max(self._label_dist.values()) / total
         if ratio > 0.80: return 0.10
         if ratio > 0.65: return 0.05
-        return 0.0001
+        return 0.01
 
     def _obs(self, feedback: Optional[str] = None, last_reward: Optional[float] = None) -> EmailTriageObservation:
         idx = self._state.current_email_index
@@ -473,11 +473,11 @@ class EmailTriageEnvironment:
         )
 
     def _grade(self, action: EmailTriageAction, gt: Dict[str, Any], email_data: Dict[str, Any]) -> Tuple[float, str, Dict[str, Any]]:
-        if getattr(action, 'skip', False): return -0.05, "skipped", {"skipped": True}
-        if gt["label"] == "spam" and getattr(action, 'reply', None): return -0.20, "replied to spam", {"spam_reply_penalty": True}
+        if getattr(action, 'skip', False): return 0.05, "skipped", {"skipped": True}
+        if gt["label"] == "spam" and getattr(action, 'reply', None): return 0.05, "replied to spam", {"spam_reply_penalty": True}
 
         weights, task_id = self._cfg["weights"], self._state.task_id
-        parts, info, total = [], {}, 0.0001
+        parts, info, total = [], {}, 0.05
 
         if "label" in weights:
             ls = self._label_score(getattr(action, 'label', None), gt["label"])
@@ -503,34 +503,34 @@ class EmailTriageEnvironment:
             info["reply_score"] = rps
             parts.append(f"reply={rps:.2f}")
 
-        return max(0.0001, min(0.9999, total)), "scores: " + ", ".join(parts), info
+        return max(0.05, min(0.95, total)), "scores: " + ", ".join(parts), info
 
     @staticmethod
     def _label_score(predicted: Optional[str], truth: str) -> float:
-        if not predicted or predicted.strip().lower() not in VALID_LABELS: return 0.0001
+        if not predicted or predicted.strip().lower() not in VALID_LABELS: return 0.05
         p = predicted.strip().lower()
-        if p == truth: return 0.9999
-        return max(0.0001, min(0.9999, LABEL_ADJACENCY.get(truth, {}).get(p, 0.0001)))
+        if p == truth: return 0.95
+        return max(0.05, min(0.95, LABEL_ADJACENCY.get(truth, {}).get(p, 0.05)))
 
     @staticmethod
     def _route_score(predicted: Optional[str], truth: Optional[str]) -> float:
-        if truth is None: return 0.9999 if not predicted or not predicted.strip() else 0.0001
-        if not predicted or not predicted.strip() or predicted.strip().lower() not in VALID_ROUTES: return 0.0001
-        return 0.9999 if predicted.strip().lower() == truth else 0.0001
+        if truth is None: return 0.95 if not predicted or not predicted.strip() else 0.05
+        if not predicted or not predicted.strip() or predicted.strip().lower() not in VALID_ROUTES: return 0.05
+        return 0.95 if predicted.strip().lower() == truth else 0.05
 
     @staticmethod
     def _summary_score(summary: Optional[str], reference: str) -> float:
-        if not summary or len(summary.strip()) < 20: return 0.0001
+        if not summary or len(summary.strip()) < 20: return 0.05
         s = summary.strip()
         if len(s) > 280: return 0.30
-        if not reference: return max(0.0001, min(0.90, len(s) / 140.0))
-        return max(0.0001, min(0.95, _r1f1(s, reference) / 0.35))
+        if not reference: return max(0.05, min(0.90, len(s) / 140.0))
+        return max(0.05, min(0.95, _r1f1(s, reference) / 0.35))
 
     @staticmethod
     def _reply_score(reply: Optional[str], gt: Dict[str, Any], body: str, key_terms: List[str]) -> float:
         if not gt.get("needs_reply", False): return 0.80 if not reply else 0.10
-        if not reply or len(reply.strip()) < 25: return 0.0001
+        if not reply or len(reply.strip()) < 25: return 0.05
         rel = _r1f1(reply.strip(), f"{body} {' '.join(key_terms)}")
-        if len(reply.strip()) > 700: return max(0.0001, min(0.65, 0.35 + 0.3 * min(0.9999, rel / 0.20)))
+        if len(reply.strip()) > 700: return max(0.05, min(0.65, 0.35 + 0.3 * min(0.95, rel / 0.20)))
         if rel < 0.10: return 0.20
-        return max(0.0001, min(0.95, 0.50 + 0.45 * min(0.9999, rel / 0.25)))
+        return max(0.05, min(0.95, 0.50 + 0.45 * min(0.95, rel / 0.25)))  good ? 
