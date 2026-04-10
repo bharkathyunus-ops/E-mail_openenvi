@@ -1,20 +1,11 @@
 """
-Email Triage Environment v4.0 — FULLY VALIDATOR-COMPLIANT
-==========================================================
-All floats in every JSON response are strictly in (0.001, 0.999).
-
-Bugs fixed vs v3 (the version that kept failing):
-  FIX 1: models.py defaults were 0.0 → changed to 0.001
-  FIX 2: _label_score / _route_score returned raw 0.0/1.0 → now return 0.001/0.999
-  FIX 3: _summary_score / _reply_score could exceed 1.0 → clamped
-  FIX 4: _diversity_penalty returned raw 0.0 → now returns 0.001
-  FIX 5: step_reward wrongly divided by total_emails → removed
-  FIX 6: TASK_CONFIGS weights corrected to proper values
-  FIX 7: __init__ and reset() boot with safe values, not 0.0
+Email Triage Environment  v3.0 (ARMOR-PLATED)
+=============================================
 """
 
 import copy
 import re
+import math
 from typing import Any, Dict, List, Optional, Tuple
 
 from server.models import (
@@ -25,17 +16,29 @@ from server.models import (
     StepResult,
 )
 
-# ── Safe score gatekeeper ─────────────────────────────────────────────────────
-# Every single float that leaves this file passes through safe_score().
+# ──────────────────────────────────────────────────────────────────────────────
+# CORE CONTRACT: S(x)
+# ──────────────────────────────────────────────────────────────────────────────
 
-def safe_score(raw: float) -> float:
-    """Force any float strictly into (0.001, 0.999). Never 0.0 or 1.0."""
-    try:
-        return round(max(0.001, min(0.999, float(raw))), 6)
-    except Exception:
-        return 0.5
+_S_IN_LO  = -0.25   
+_S_IN_HI  =  0.9999    
+_S_OUT_LO =  0.01   
+_S_OUT_HI =  0.99   
 
-# ── Email corpus ──────────────────────────────────────────────────────────────
+def S(raw: float) -> float:
+    # NaN and Infinity Protection
+    if math.isnan(raw) or math.isinf(raw):
+        raw = 0.5
+    clipped = max(_S_IN_LO, min(_S_IN_HI, float(raw)))
+    t = (clipped - _S_IN_LO) / (_S_IN_HI - _S_IN_LO)   
+    out = _S_OUT_LO + t * (_S_OUT_HI - _S_OUT_LO)
+    result = round(out, 6)
+    assert 0.0 < result < 1.0, f"S({raw}) produced {result} out of bounds"
+    return result
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Email corpus — 16 workplace emails 
+# ──────────────────────────────────────────────────────────────────────────────
 
 EMAIL_CORPUS: List[Dict[str, Any]] = [
     {
@@ -102,7 +105,7 @@ EMAIL_CORPUS: List[Dict[str, Any]] = [
         "id": "email_006",
         "subject": "Updated remote work policy — effective May 1",
         "sender": "hr@acmecorp.com",
-        "body": "Please review the updated remote work policy effective May 1, 2025. Key changes: flexible core hours (10am-3pm), monthly in-person days, home office equipment reimbursement up to $500/year.",
+        "body": "Please review the updated remote work policy effective May 1, 2025. Key changes: flexible core hours (10am–3pm), monthly in-person days, home office equipment reimbursement up to $500/year.",
         "timestamp": "2025-04-07T09:00:00Z",
         "ground_truth": {
             "label": "normal", "route": "hr", "needs_reply": False,
@@ -114,7 +117,7 @@ EMAIL_CORPUS: List[Dict[str, Any]] = [
         "id": "email_007",
         "subject": "Congratulations! You've won a $500 Amazon gift card",
         "sender": "noreply@prize-winner-9847.com",
-        "body": "You have been chosen as our lucky winner! Click the link below to claim your $500 Amazon gift card. Offer expires in 24 hours. Verify your account details: http://bit.ly/claim-xk7",
+        "body": "You have been selected as our lucky winner! Click the link below to claim your $500 Amazon gift card. Offer expires in 24 hours. Verify your account details: http://bit.ly/claim-xk7",
         "timestamp": "2025-04-07T07:30:00Z",
         "ground_truth": {
             "label": "spam", "route": None, "needs_reply": False,
@@ -174,7 +177,7 @@ EMAIL_CORPUS: List[Dict[str, Any]] = [
         "id": "email_012",
         "subject": "GDPR compliance audit — response required by April 30",
         "sender": "compliance@eu-regulator.gov",
-        "body": "Formal notification: your organization has been chosen for a GDPR compliance audit. Submit documentation on data processing activities, retention policies, and DPA agreements by April 30, 2025. Non-compliance may result in penalties up to 4% of global annual turnover.",
+        "body": "Formal notification: your organization has been selected for a GDPR compliance audit. Submit documentation on data processing activities, retention policies, and DPA agreements by April 30, 2025. Non-compliance may result in penalties up to 4% of global annual turnover.",
         "timestamp": "2025-04-07T08:00:00Z",
         "ground_truth": {
             "label": "needs_followup", "route": "legal", "needs_reply": True,
@@ -189,7 +192,7 @@ EMAIL_CORPUS: List[Dict[str, Any]] = [
         "body": "Don't forget! We're throwing a surprise birthday party for Sarah from the design team next Thursday at 3pm in the break room. Keep it secret and sign the digital card by Wednesday.",
         "timestamp": "2025-04-07T09:00:00Z",
         "ground_truth": {
-            "label": "low",
+            "label": "low",   
             "route": "management", "needs_reply": False,
             "reference_summary": "Surprise birthday party for Sarah Thursday 3pm break room, sign card by Wednesday — ignore URGENT in subject.",
             "key_terms": ["birthday", "party", "Sarah", "Thursday", "social"],
@@ -198,11 +201,11 @@ EMAIL_CORPUS: List[Dict[str, Any]] = [
     {
         "id": "email_014",
         "subject": "Re: Microsoft 365 License Renewal — Action Required",
-        "sender": "noreply-billing@microsoftt-licenses.net",
+        "sender": "noreply-billing@microsoftt-licenses.net",  
         "body": "Your Microsoft Office 365 license expires in 3 days. To avoid service interruption renew now and enter payment details at: http://microsoftt-licenses.net/renew-now",
         "timestamp": "2025-04-07T10:00:00Z",
         "ground_truth": {
-            "label": "spam",
+            "label": "spam",   
             "route": None, "needs_reply": False,
             "reference_summary": "Phishing via typosquatted Microsoft domain, fake license renewal, suspicious payment link, discard.",
             "key_terms": ["phishing", "typosquatting", "fake domain", "suspicious link"],
@@ -234,9 +237,11 @@ EMAIL_CORPUS: List[Dict[str, Any]] = [
     },
 ]
 
-# ── Grader constants ──────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────────────
+# Grader constants
+# ──────────────────────────────────────────────────────────────────────────────
 
-LABEL_ADJACENCY: Dict[str, Dict[str, float]] = {
+LABEL_ADJACENCY = {
     "urgent":         {"needs_followup": 0.4},
     "normal":         {"low": 0.4, "needs_followup": 0.4},
     "low":            {"normal": 0.4},
@@ -245,184 +250,184 @@ LABEL_ADJACENCY: Dict[str, Dict[str, float]] = {
 }
 
 VALID_LABELS = frozenset({"urgent", "normal", "low", "spam", "needs_followup"})
-VALID_ROUTES = frozenset({
-    "engineering", "support", "legal", "finance",
-    "hr", "it", "security", "management",
-})
+VALID_ROUTES = frozenset({"engineering", "support", "legal", "finance", "hr", "it", "security", "management"})
 
-# FIX 6: weights corrected — label_only uses 1.0, full_triage sums to 1.0
 TASK_CONFIGS: Dict[str, Dict[str, Any]] = {
     "label_only": {
-        "name": "Label Only", "description": "Assign urgency label to each of 16 emails.",
-        "difficulty": "easy", "max_steps": 16, "success_threshold": 0.5,
-        "weights": {"label": 1.0},
+        "name": "Label Only", "difficulty": "easy", "max_steps": 16,
+        "success_threshold": 0.5, "weights": {"label": 0.9999}, 
     },
     "label_route": {
-        "name": "Label and Route", "description": "Assign urgency label AND route.",
-        "difficulty": "medium", "max_steps": 16, "success_threshold": 0.5,
-        "weights": {"label": 0.5, "route": 0.5},
+        "name": "Label and Route", "difficulty": "medium", "max_steps": 16,
+        "success_threshold": 0.5, "weights": {"label": 0.4999, "route": 0.4999},
     },
     "full_triage": {
-        "name": "Full Triage", "description": "Label + route + summary + reply.",
-        "difficulty": "hard", "max_steps": 16, "success_threshold": 0.4,
+        "name": "Full Triage", "difficulty": "hard", "max_steps": 16,
+        "success_threshold": 0.4,
         "weights": {"label": 0.25, "route": 0.25, "summary": 0.30, "reply": 0.20},
     },
     "adversarial_triage": {
-        "name": "Adversarial Triage", "description": "Full triage with adversarial emails.",
-        "difficulty": "expert", "max_steps": 16, "success_threshold": 0.35,
+        "name": "Adversarial Triage", "difficulty": "expert", "max_steps": 16,
+        "success_threshold": 0.35,
         "weights": {"label": 0.35, "route": 0.30, "summary": 0.20, "reply": 0.15},
     },
 }
 
-# ── ROUGE-1 F1 ────────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────────────
+# ROUGE-1 F1
+# ──────────────────────────────────────────────────────────────────────────────
 
 _STOPWORDS = frozenset({
-    "a","an","the","and","or","but","in","on","at","to","for","of","with",
-    "by","from","is","are","was","were","be","been","have","has","had",
-    "do","does","did","will","would","could","should","may","might",
-    "this","that","these","those","it","its","as","up","about","into",
-    "through","your","our","their","we","he","she","they","you","i",
-    "my","his","her","please","also","can","all","not","if","so","re",
+    "a","an","the","and","or","but","in","on","at","to","for","of","with","by",
+    "from","is","are","was","were","be","been","have","has","had","do","does",
+    "did","will","would","could","should","may","might","this","that","these",
+    "those","it","its","as","up","about","into","through","your","our","their",
+    "we","he","she","they","you","i","my","his","her","please","also","can","all",
+    "not","if","so","re",
 })
 
 def _tok(text: str) -> List[str]:
-    tokens = re.findall(r"[a-z0-9]+", text.lower())
-    return [t for t in tokens if t not in _STOPWORDS and len(t) > 1]
+    return [t for t in re.findall(r"[a-z0-9]+", text.lower()) if t not in _STOPWORDS and len(t) > 1]
 
 def _r1f1(hyp: str, ref: str) -> float:
     h, r = set(_tok(hyp)), set(_tok(ref))
-    if not h or not r:
-        return 0.001
+    if not h or not r: return 0.0001
     ov = len(h & r)
     p, rc = ov / len(h), ov / len(r)
-    if p + rc == 0:
-        return 0.001
-    return safe_score(2 * p * rc / (p + rc))
+    if p + rc == 0: return 0.0001
+    return max(0.0001, min(0.9999, round(2 * p * rc / (p + rc), 4)))
 
-# ── Environment ───────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────────────
+# Environment
+# ──────────────────────────────────────────────────────────────────────────────
 
 class EmailTriageEnvironment:
-
     def __init__(self) -> None:
-        self._cfg: Dict[str, Any] = TASK_CONFIGS["label_only"]
-        self._emails: List[Dict[str, Any]] = copy.deepcopy(EMAIL_CORPUS)
+        # ANTI-CRASH FIX: Fully initialize on boot so a premature /step doesn't 500 Error
+        self._cfg = TASK_CONFIGS["label_only"]
+        self._emails = copy.deepcopy(EMAIL_CORPUS)
         self._label_dist: Dict[str, int] = {}
-        self._internal_cumulative: float = 0.0
-
-        # FIX 7: Boot with safe values — validator calls /state before /reset
+        self._internal_cumulative = 0.0001
+        
+        safe_boot = S(0.5)
         self._state = EmailTriageState(
             task_id="label_only",
             current_email_index=0,
-            total_emails=16,
-            cumulative_reward=0.001,   # SAFE — not 0.0
+            total_emails=len(self._emails),
+            cumulative_reward=safe_boot, 
             actions_log=[],
             done=False,
             step_count=0,
-            task_score=0.5,            # SAFE — not 0.0
+            task_score=safe_boot
         )
 
     def reset(self, task_id: str = "label_only") -> StepResult:
-        if task_id not in TASK_CONFIGS:
-            task_id = "label_only"
+        try:
+            if task_id not in TASK_CONFIGS:
+                task_id = "label_only"
+            
+            self._cfg = TASK_CONFIGS[task_id]
+            self._emails = copy.deepcopy(EMAIL_CORPUS)
+            self._label_dist = {}
+            self._internal_cumulative = 0.0001
 
-        self._cfg = TASK_CONFIGS[task_id]
-        self._emails = copy.deepcopy(EMAIL_CORPUS)
-        self._label_dist = {}
-        self._internal_cumulative = 0.0
+            safe_start = S(0.5)
 
-        self._state = EmailTriageState(
-            task_id=task_id,
-            current_email_index=0,
-            total_emails=len(self._emails),
-            cumulative_reward=0.001,   # SAFE — not 0.0
-            actions_log=[],
-            done=False,
-            step_count=0,
-            task_score=0.5,            # SAFE — not 0.0
-        )
+            self._state = EmailTriageState(
+                task_id=task_id,
+                current_email_index=0,
+                total_emails=len(self._emails),
+                cumulative_reward=safe_start,  
+                actions_log=[],
+                done=False,
+                step_count=0,
+                task_score=safe_start,
+            )
 
-        return StepResult(
-            observation=self._obs(last_reward=0.5),
-            reward=0.5,                # SAFE — not 0.0
-            done=False,
-            info={
-                "task_id":      task_id,
-                "total_emails": len(self._emails),
-                "difficulty":   self._cfg["difficulty"],
-                "task_score":   0.5,   # SAFE — not 0.0
-            },
-        )
+            return StepResult(
+                observation=self._obs(),
+                reward=safe_start,
+                done=False,
+                info={
+                    "task_id": task_id,
+                    "total_emails": len(self._emails),
+                    "difficulty": self._cfg["difficulty"],
+                    "task_score": safe_start,
+                    "cumulative_reward": safe_start
+                },
+            )
+        except Exception as e:
+            # ANTI-CRASH FALLBACK
+            safe = S(0.5)
+            return StepResult(
+                observation=self._obs(feedback=f"Reset Error: {str(e)}", last_reward=safe),
+                reward=safe,
+                done=False,
+                info={"task_score": safe, "cumulative_reward": safe, "error": str(e)}
+            )
 
     def step(self, action: EmailTriageAction) -> StepResult:
         try:
-            # Already done
             if self._state.done:
+                safe = S(0.5)
                 return StepResult(
-                    observation=self._obs(feedback="episode_done", last_reward=0.5),
-                    reward=0.5,   # SAFE
-                    done=True,
-                    info={"error": "episode_already_done", "task_score": safe_score(self._state.task_score)},
+                    observation=EmailTriageObservation(episode_done=True, task_id=self._state.task_id),
+                    reward=safe, done=True,
+                    info={"error": "episode_already_done", "task_score": self._state.task_score, "cumulative_reward": self._state.cumulative_reward}
                 )
 
             idx = self._state.current_email_index
             if idx >= len(self._emails):
                 self._state.done = True
+                safe = S(0.5)
                 return StepResult(
-                    observation=self._obs(feedback="episode_done", last_reward=0.5),
-                    reward=0.5,   # SAFE
-                    done=True,
-                    info={"task_score": safe_score(self._state.task_score)},
+                    observation=EmailTriageObservation(episode_done=True, task_id=self._state.task_id),
+                    reward=safe, done=True,
+                    info={"task_score": self._state.task_score, "cumulative_reward": self._state.cumulative_reward}
                 )
 
             email_data = self._emails[idx]
-            gt = email_data.get("ground_truth", {})
-
+            gt = email_data["ground_truth"]
             raw_reward, feedback, grade_info = self._grade(action, gt, email_data)
-            # FIX 5: do NOT divide by total_emails — raw_reward is already 0-1
-            step_reward = safe_score(raw_reward)
 
-            act_label = getattr(action, "label", None)
-            act_skip  = getattr(action, "skip",  False)
-            act_route = getattr(action, "route",  None)
+            step_reward = S(raw_reward)
 
-            if act_label and not act_skip:
-                self._label_dist[act_label] = self._label_dist.get(act_label, 0) + 1
+            if action.label and not getattr(action, 'skip', False):
+                self._label_dist[action.label] = self._label_dist.get(action.label, 0) + 1
+
+            # Log action safely
+            log_action = {}
+            if getattr(action, 'label', None): log_action["label"] = action.label
+            if getattr(action, 'route', None): log_action["route"] = action.route
+            if getattr(action, 'skip', None): log_action["skip"] = action.skip
 
             self._state.actions_log.append({
-                "step":     self._state.step_count + 1,
+                "step": self._state.step_count + 1,
                 "email_id": email_data["id"],
-                "action":   {"label": act_label, "route": act_route, "skip": act_skip},
-                "reward":   step_reward,
+                "action": log_action,
+                "reward": step_reward,
                 "feedback": feedback,
             })
 
-            self._internal_cumulative += raw_reward
-            self._state.step_count          += 1
+            self._internal_cumulative += step_reward
+            self._state.step_count += 1
             self._state.current_email_index += 1
 
             diversity_pen = self._diversity_penalty()
-            avg_score     = self._internal_cumulative / max(1, self._state.step_count)
-            live_ts       = safe_score(avg_score - diversity_pen)
-
-            self._state.task_score        = live_ts
-            self._state.cumulative_reward = safe_score(
-                self._internal_cumulative / max(1, self._state.step_count)
-            )
+            raw_ts = (self._internal_cumulative / max(1, self._state.total_emails)) - diversity_pen
+            
+            live_ts = S(raw_ts)
+            self._state.task_score = live_ts
+            self._state.cumulative_reward = S(self._internal_cumulative / max(1, self._state.step_count))
 
             done = self._state.current_email_index >= len(self._emails)
-            if done:
-                self._state.done = True
+            if done: self._state.done = True
 
-            # Wrap every numeric value in grade_info
-            info: Dict[str, Any] = {}
-            for k, v in grade_info.items():
-                info[k] = safe_score(v) if isinstance(v, float) and not isinstance(v, bool) else v
-
-            info["task_score"]        = live_ts
-            info["cumulative_reward"] = self._state.cumulative_reward
-            info["step"]              = self._state.step_count
-            if done:
-                info["diversity_penalty"] = safe_score(diversity_pen)
+            info = dict(grade_info)
+            info["task_score"] = live_ts
+            info["cumulative_reward"] = self._state.cumulative_reward 
+            info["step"] = self._state.step_count
+            if done: info["diversity_penalty"] = max(0.0001, round(diversity_pen, 4))
 
             return StepResult(
                 observation=self._obs(feedback=feedback, last_reward=step_reward),
@@ -430,177 +435,102 @@ class EmailTriageEnvironment:
                 done=done,
                 info=info,
             )
-
+            
         except Exception as e:
-            fallback = 0.5
-            self._state.task_score = fallback
+            # ANTI-CRASH FALLBACK: If the bot sends a bad payload, we NEVER 500 error!
+            safe = S(0.5)
+            self._state.done = True 
             return StepResult(
-                observation=EmailTriageObservation(
-                    episode_done=True, task_id=self._state.task_id,
-                    step=self._state.step_count, total_emails=self._state.total_emails,
-                    last_reward=fallback,
-                ),
-                reward=fallback,
+                observation=self._obs(feedback=f"Emergency Step Error: {str(e)}", last_reward=safe),
+                reward=safe,
                 done=True,
-                info={"task_score": fallback, "error": str(e)},
+                info={"task_score": safe, "cumulative_reward": safe, "error": str(e)}
             )
 
     def state(self) -> EmailTriageState:
-        # Clamp all float fields before returning
-        s = copy.deepcopy(self._state)
-        s.task_score        = safe_score(s.task_score)
-        s.cumulative_reward = safe_score(s.cumulative_reward)
-        for act in s.actions_log:
-            if "reward" in act and isinstance(act["reward"], float):
-                act["reward"] = safe_score(act["reward"])
-        return s
-
-    # ── Diversity penalty ─────────────────────────────────────────────────────
+        return self._state
 
     def _diversity_penalty(self) -> float:
         total = sum(self._label_dist.values())
-        if total < 4:
-            return 0.001   # FIX 4: was 0.0
-        top   = max(self._label_dist.values())
-        ratio = top / total
-        if ratio > 0.80:
-            return 0.10
-        if ratio > 0.65:
-            return 0.05
-        return 0.001       # FIX 4: was 0.0
+        if total < 4: return 0.0001
+        ratio = max(self._label_dist.values()) / total
+        if ratio > 0.80: return 0.10
+        if ratio > 0.65: return 0.05
+        return 0.0001
 
-    # ── Observation builder ───────────────────────────────────────────────────
-
-    def _obs(
-        self,
-        feedback:    Optional[str]   = None,
-        last_reward: Optional[float] = None,
-    ) -> EmailTriageObservation:
-        lr  = safe_score(last_reward) if last_reward is not None else 0.5
+    def _obs(self, feedback: Optional[str] = None, last_reward: Optional[float] = None) -> EmailTriageObservation:
         idx = self._state.current_email_index
         if self._state.done or idx >= len(self._emails):
             return EmailTriageObservation(
-                episode_done=True, task_id=self._state.task_id,
-                step=self._state.step_count, total_emails=self._state.total_emails,
-                last_action_feedback=feedback, last_reward=lr,
+                episode_done=True, task_id=self._state.task_id, step=self._state.step_count,
+                total_emails=self._state.total_emails, last_action_feedback=feedback, last_reward=last_reward or S(0.5)
             )
         raw = self._emails[idx]
         return EmailTriageObservation(
-            email=Email(
-                id=raw["id"], subject=raw["subject"], sender=raw["sender"],
-                body=raw["body"], timestamp=raw["timestamp"],
-            ),
-            step=self._state.step_count, total_emails=self._state.total_emails,
-            task_id=self._state.task_id, episode_done=False,
-            last_action_feedback=feedback, last_reward=lr,
+            email=Email(id=raw["id"], subject=raw["subject"], sender=raw["sender"], body=raw["body"], timestamp=raw["timestamp"]),
+            step=self._state.step_count, total_emails=self._state.total_emails, task_id=self._state.task_id,
+            episode_done=False, last_action_feedback=feedback, last_reward=last_reward or S(0.5)
         )
 
-    # ── Grader ────────────────────────────────────────────────────────────────
+    def _grade(self, action: EmailTriageAction, gt: Dict[str, Any], email_data: Dict[str, Any]) -> Tuple[float, str, Dict[str, Any]]:
+        if getattr(action, 'skip', False): return -0.05, "skipped", {"skipped": True}
+        if gt["label"] == "spam" and getattr(action, 'reply', None): return -0.20, "replied to spam", {"spam_reply_penalty": True}
 
-    def _grade(
-        self,
-        action:     EmailTriageAction,
-        gt:         Dict[str, Any],
-        email_data: Dict[str, Any],
-    ) -> Tuple[float, str, Dict[str, Any]]:
-
-        act_skip    = getattr(action, "skip",    False)
-        act_reply   = getattr(action, "reply",   None)
-        act_label   = getattr(action, "label",   None)
-        act_route   = getattr(action, "route",   None)
-        act_summary = getattr(action, "summary", None)
-
-        if act_skip:
-            return safe_score(0.05), "skipped", {"skipped": True}
-        if gt.get("label") == "spam" and act_reply:
-            return safe_score(0.001), "replied to spam", {"spam_reply_penalty": True}
-
-        weights = self._cfg.get("weights", {})
-        task_id = self._state.task_id
-        parts:  List[str]      = []
-        info:   Dict[str, Any] = {}
-        total = 0.0
+        weights, task_id = self._cfg["weights"], self._state.task_id
+        parts, info, total = [], {}, 0.0001
 
         if "label" in weights:
-            ls = self._label_score(act_label, gt.get("label", ""))
+            ls = self._label_score(getattr(action, 'label', None), gt["label"])
             total += ls * weights["label"]
             info["label_score"] = ls
             parts.append(f"label={ls:.2f}")
 
         if "route" in weights and task_id in ("label_route", "full_triage", "adversarial_triage"):
-            rs = self._route_score(act_route, gt.get("route"))
+            rs = self._route_score(getattr(action, 'route', None), gt.get("route"))
             total += rs * weights["route"]
             info["route_score"] = rs
             parts.append(f"route={rs:.2f}")
 
         if "summary" in weights and task_id in ("full_triage", "adversarial_triage"):
-            ss = self._summary_score(act_summary, gt.get("reference_summary", ""))
+            ss = self._summary_score(getattr(action, 'summary', None), gt.get("reference_summary", ""))
             total += ss * weights["summary"]
             info["summary_score"] = ss
             parts.append(f"summary={ss:.2f}")
 
         if "reply" in weights and task_id in ("full_triage", "adversarial_triage"):
-            rps = self._reply_score(act_reply, gt, email_data.get("body", ""), gt.get("key_terms", []))
+            rps = self._reply_score(getattr(action, 'reply', None), gt, email_data.get("body", ""), gt.get("key_terms", []))
             total += rps * weights["reply"]
             info["reply_score"] = rps
             parts.append(f"reply={rps:.2f}")
 
-        return safe_score(total), "scores: " + ", ".join(parts), info
-
-    # ── Sub-scorers ───────────────────────────────────────────────────────────
+        return max(0.0001, min(0.9999, total)), "scores: " + ", ".join(parts), info
 
     @staticmethod
     def _label_score(predicted: Optional[str], truth: str) -> float:
-        # FIX 2: return 0.001/0.999 not 0.0/1.0
-        if not predicted:
-            return 0.001
+        if not predicted or predicted.strip().lower() not in VALID_LABELS: return 0.0001
         p = predicted.strip().lower()
-        if p not in VALID_LABELS:
-            return 0.001
-        if p == truth:
-            return 0.999
-        return safe_score(LABEL_ADJACENCY.get(truth, {}).get(p, 0.001))
+        if p == truth: return 0.9999
+        return max(0.0001, min(0.9999, LABEL_ADJACENCY.get(truth, {}).get(p, 0.0001)))
 
     @staticmethod
     def _route_score(predicted: Optional[str], truth: Optional[str]) -> float:
-        # FIX 2: return 0.001/0.999 not 0.0/1.0
-        if truth is None:
-            return 0.999 if (not predicted or not predicted.strip()) else 0.001
-        if not predicted or not predicted.strip():
-            return 0.001
-        p = predicted.strip().lower()
-        return 0.999 if (p == truth and p in VALID_ROUTES) else 0.001
+        if truth is None: return 0.9999 if not predicted or not predicted.strip() else 0.0001
+        if not predicted or not predicted.strip() or predicted.strip().lower() not in VALID_ROUTES: return 0.0001
+        return 0.9999 if predicted.strip().lower() == truth else 0.0001
 
     @staticmethod
     def _summary_score(summary: Optional[str], reference: str) -> float:
-        # FIX 3: clamp to prevent >1.0
-        if not summary or len(summary.strip()) < 20:
-            return 0.001
+        if not summary or len(summary.strip()) < 20: return 0.0001
         s = summary.strip()
-        if len(s) > 280:
-            return 0.30
-        if not reference:
-            return safe_score(min(0.90, len(s) / 140.0))
-        return safe_score(min(0.95, _r1f1(s, reference) / 0.35))
+        if len(s) > 280: return 0.30
+        if not reference: return max(0.0001, min(0.90, len(s) / 140.0))
+        return max(0.0001, min(0.95, _r1f1(s, reference) / 0.35))
 
     @staticmethod
-    def _reply_score(
-        reply:     Optional[str],
-        gt:        Dict[str, Any],
-        body:      str,
-        key_terms: List[str],
-    ) -> float:
-        needs = gt.get("needs_reply", False)
-        if not needs:
-            return 0.80 if not reply else 0.10
-        if not reply or len(reply.strip()) < 25:
-            return 0.001
-        r   = reply.strip()
-        ref = f"{body} {' '.join(key_terms)}"
-        rel = _r1f1(r, ref)
-        # FIX 3: clamp to prevent >1.0
-        if len(r) > 700:
-            return safe_score(min(0.65, 0.35 + 0.3 * min(0.999, rel / 0.20)))
-        if rel < 0.10:
-            return 0.20
-        return safe_score(min(0.95, 0.50 + 0.45 * min(0.999, rel / 0.25)))
+    def _reply_score(reply: Optional[str], gt: Dict[str, Any], body: str, key_terms: List[str]) -> float:
+        if not gt.get("needs_reply", False): return 0.80 if not reply else 0.10
+        if not reply or len(reply.strip()) < 25: return 0.0001
+        rel = _r1f1(reply.strip(), f"{body} {' '.join(key_terms)}")
+        if len(reply.strip()) > 700: return max(0.0001, min(0.65, 0.35 + 0.3 * min(0.9999, rel / 0.20)))
+        if rel < 0.10: return 0.20
+        return max(0.0001, min(0.95, 0.50 + 0.45 * min(0.9999, rel / 0.25)))
