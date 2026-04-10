@@ -4,13 +4,12 @@ Email Triage Environment  v3.0
 OpenEnv step() / reset() / state() interface.
 
 SCORING CONTRACT (enforced at every return point):
-  - Every reward value returned by step() is strictly in (0.0, 1.0)
-  - task_score in info dict is strictly in (0.0, 1.0) at EVERY step
-  - /state task_score is strictly in (0.0, 1.0) at ALL times
+  - Every reward value returned by step() is strictly in (0.01, 0.95)
+  - task_score in info dict is strictly in (0.05, 0.95) at EVERY step
+  - /state task_score is strictly in (0.05, 0.95) at ALL times
+  - Sub-metrics (label_score, etc.) are strictly in (0.05, 0.95)
+  - Sum of step rewards is strictly < 1.0
   - No literal 0.0 or 1.0 ever leaves this module
-
-Implementation: all scores pass through S() before being returned.
-S(x) maps any float → (0.01, 0.99) via linear interpolation.
 """
 
 import copy
@@ -24,28 +23,6 @@ from server.models import (
     EmailTriageState,
     StepResult,
 )
-
-# ──────────────────────────────────────────────────────────────────────────────
-# CORE CONTRACT: S(x)
-# ──────────────────────────────────────────────────────────────────────────────
-
-_S_IN_LO  = -0.25   
-_S_IN_HI  =  0.9999
-_S_OUT_LO =  0.01   
-_S_OUT_HI =  0.99   
-
-def S(raw: float) -> float:
-    clipped = max(_S_IN_LO, min(_S_IN_HI, float(raw)))
-    t = (clipped - _S_IN_LO) / (_S_IN_HI - _S_IN_LO)   
-    out = _S_OUT_LO + t * (_S_OUT_HI - _S_OUT_LO)
-    result = round(out, 6)
-    assert 0.0 < result < 1.0, f"S({raw}) produced {result} which is out of (0,1)"
-    return result
-
-def _running_score(cumulative: float, n_emails: int) -> float:
-    if n_emails <= 0:
-        return S(0.5)
-    return S(cumulative / n_emails)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Email corpus — 16 workplace emails (12 standard + 4 adversarial)
@@ -379,7 +356,7 @@ TASK_CONFIGS: Dict[str, Dict[str, Any]] = {
         "difficulty": "easy",
         "max_steps": 16,
         "success_threshold": 0.5,
-        "weights": {"label": 0.9999}, 
+        "weights": {"label": 1.0}, 
     },
     "label_route": {
         "name": "Label and Route",
@@ -387,7 +364,7 @@ TASK_CONFIGS: Dict[str, Dict[str, Any]] = {
         "difficulty": "medium",
         "max_steps": 16,
         "success_threshold": 0.5,
-        "weights": {"label": 0.4999, "route": 0.4999},
+        "weights": {"label": 0.5, "route": 0.5},
     },
     "full_triage": {
         "name": "Full Triage",
@@ -427,13 +404,13 @@ def _tok(text: str) -> List[str]:
 def _r1f1(hyp: str, ref: str) -> float:
     h, r = set(_tok(hyp)), set(_tok(ref))
     if not h or not r:
-        return 0.0001
+        return 0.05
     ov = len(h & r)
     p, rc = ov / len(h), ov / len(r)
     if p + rc == 0:
-        return 0.0001
+        return 0.05
     val = 2 * p * rc / (p + rc)
-    return max(0.0001, min(0.9999, round(val, 4)))
+    return max(0.05, min(0.95, round(val, 4)))
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Environment
@@ -445,17 +422,17 @@ class EmailTriageEnvironment:
         self._emails: List[Dict[str, Any]] = []
         self._label_dist: Dict[str, int] = {}
         
-        self._internal_cumulative = 0.0001
+        self._internal_cumulative = 0.05
         
         self._state = EmailTriageState(
             task_id="label_only",
             current_email_index=0,
             total_emails=16,
-            cumulative_reward=0.0001,
+            cumulative_reward=0.05,
             actions_log=[],
             done=False,
             step_count=0,
-            task_score=0.0001
+            task_score=0.05
         )
 
     def reset(self, task_id: str = "label_only") -> StepResult:
@@ -468,28 +445,28 @@ class EmailTriageEnvironment:
         self._emails = copy.deepcopy(EMAIL_CORPUS)
         self._label_dist = {}
         
-        self._internal_cumulative = 0.0001
+        self._internal_cumulative = 0.0
 
         self._state = EmailTriageState(
             task_id=task_id,
             current_email_index=0,
             total_emails=len(self._emails),
-            cumulative_reward=0.0001, 
+            cumulative_reward=0.05, 
             actions_log=[],
             done=False,
             step_count=0,
-            task_score=0.0001,
+            task_score=0.05,
         )
 
         return StepResult(
             observation=self._obs(),
-            reward=0.0001,
+            reward=0.05,
             done=False,
             info={
                 "task_id": task_id,
                 "total_emails": len(self._emails),
                 "difficulty": self._cfg["difficulty"],
-                "task_score": 0.0001,
+                "task_score": 0.05,
             },
         )
 
@@ -499,7 +476,7 @@ class EmailTriageEnvironment:
                 observation=EmailTriageObservation(
                     episode_done=True, task_id=self._state.task_id
                 ),
-                reward=0.0001,
+                reward=0.05,
                 done=True,
                 info={
                     "error": "episode_already_done",
@@ -514,19 +491,20 @@ class EmailTriageEnvironment:
                 observation=EmailTriageObservation(
                     episode_done=True, task_id=self._state.task_id
                 ),
-                reward=0.0001,
+                reward=0.05,
                 done=True,
                 info={"task_score": self._state.task_score},
             )
 
         email_data = self._emails[idx]
         gt = email_data["ground_truth"]
+        
+        # raw_reward is guaranteed [0.05, 0.95] from _grade
         raw_reward, feedback, grade_info = self._grade(action, gt, email_data)
-
-        # Map raw_reward to [0.01, 0.99] using S(), then scale down by total_emails
-        # This guarantees sum(rewards) over the episode is strictly between 0 and 1
-        scaled_reward = S(raw_reward)
-        step_reward = scaled_reward / max(1, self._state.total_emails)
+        
+        # Step reward is scaled down to prevent sum(rewards) > 1.0 over the episode
+        # Max per step: 0.95 / 16 = 0.0594. Min per step forced to 0.011 to avoid 0.00 rounding.
+        step_reward = round(max(0.011, raw_reward / max(1, self._state.total_emails)), 4)
 
         if action.label and not action.skip:
             self._label_dist[action.label] = self._label_dist.get(action.label, 0) + 1
@@ -543,16 +521,20 @@ class EmailTriageEnvironment:
             "feedback": feedback,
         })
 
-        self._internal_cumulative += step_reward
+        self._internal_cumulative += raw_reward
         self._state.step_count += 1
         self._state.current_email_index += 1
 
         diversity_pen = self._diversity_penalty()
-        raw_ts = self._internal_cumulative - diversity_pen
-        live_ts = max(0.0001, min(0.9999, raw_ts))
+        
+        # Calculate current progress as the running average of evaluated email scores
+        avg_score = self._internal_cumulative / self._state.step_count
+        
+        # Hard constraint to ensure strictly within (0, 1) and safe from Decimal format snap
+        live_ts = round(max(0.05, min(0.95, avg_score - diversity_pen)), 4)
 
         self._state.task_score = live_ts
-        self._state.cumulative_reward = max(0.0001, min(0.9999, self._internal_cumulative))
+        self._state.cumulative_reward = live_ts
 
         done = self._state.current_email_index >= len(self._emails)
         if done:
@@ -560,7 +542,7 @@ class EmailTriageEnvironment:
 
         info = dict(grade_info)
         info["task_score"]        = live_ts
-        info["cumulative_reward"] = self._state.cumulative_reward
+        info["cumulative_reward"] = live_ts
         info["step"]              = self._state.step_count
         if done:
             info["diversity_penalty"] = round(diversity_pen, 4)
@@ -578,14 +560,14 @@ class EmailTriageEnvironment:
     def _diversity_penalty(self) -> float:
         total = sum(self._label_dist.values())
         if total < 4:
-            return 0.0001
+            return 0.0
         top = max(self._label_dist.values())
         ratio = top / total
         if ratio > 0.80:
             return 0.10
         if ratio > 0.65:
             return 0.05
-        return 0.0001
+        return 0.0
 
     def _obs(
         self,
@@ -600,7 +582,7 @@ class EmailTriageEnvironment:
                 step=self._state.step_count,
                 total_emails=self._state.total_emails,
                 last_action_feedback=feedback,
-                last_reward=last_reward or 0.0001,
+                last_reward=last_reward or 0.05,
             )
         raw = self._emails[idx]
         return EmailTriageObservation(
@@ -614,7 +596,7 @@ class EmailTriageEnvironment:
             task_id=self._state.task_id,
             episode_done=False,
             last_action_feedback=feedback,
-            last_reward=last_reward or 0.0001,
+            last_reward=last_reward or 0.05,
         )
 
     def _grade(
@@ -625,15 +607,15 @@ class EmailTriageEnvironment:
     ) -> Tuple[float, str, Dict[str, Any]]:
         
         if action.skip:
-            return -0.05, "skipped (-0.05)", {"skipped": True}
+            return 0.05, "skipped (score=0.05)", {"skipped": True}
         if gt["label"] == "spam" and action.reply:
-            return -0.20, "replied to spam (-0.20)", {"spam_reply_penalty": True}
+            return 0.05, "replied to spam (score=0.05)", {"spam_reply_penalty": True}
 
         weights = self._cfg["weights"]
         task_id = self._state.task_id
         parts: List[str] = []
         info: Dict[str, Any] = {}
-        total = 0.0001
+        total = 0.0
 
         if "label" in weights:
             ls = self._label_score(action.label, gt["label"])
@@ -661,40 +643,41 @@ class EmailTriageEnvironment:
             info["reply_score"] = rps
             parts.append(f"reply={rps:.2f}")
 
-        raw = max(0.0001, min(0.9999, total))
+        raw = round(max(0.05, min(0.95, total)), 4)
         return raw, "scores: " + ", ".join(parts), info
 
     @staticmethod
     def _label_score(predicted: Optional[str], truth: str) -> float:
         if not predicted:
-            return 0.0001
+            return 0.05
         p = predicted.strip().lower()
         if p not in VALID_LABELS:
-            return 0.0001
+            return 0.05
         if p == truth:
-            return 0.9999
-        return max(0.0001, min(0.9999, LABEL_ADJACENCY.get(truth, {}).get(p, 0.0001)))
+            return 0.95
+        val = LABEL_ADJACENCY.get(truth, {}).get(p, 0.05)
+        return max(0.05, min(0.95, val))
 
     @staticmethod
     def _route_score(predicted: Optional[str], truth: Optional[str]) -> float:
         if truth is None:   
-            return 0.9999 if (not predicted or not predicted.strip()) else 0.0001
+            return 0.95 if (not predicted or not predicted.strip()) else 0.05
         if not predicted or not predicted.strip():
-            return 0.0001
+            return 0.05
         p = predicted.strip().lower()
-        val = (0.9999 if p == truth else 0.0001) if p in VALID_ROUTES else 0.0001
+        val = (0.95 if p == truth else 0.05) if p in VALID_ROUTES else 0.05
         return val
 
     @staticmethod
     def _summary_score(summary: Optional[str], reference: str) -> float:
         if not summary or len(summary.strip()) < 20:
-            return 0.0001
+            return 0.05
         s = summary.strip()
         if len(s) > 280:
             return 0.30
         if not reference:
-            return max(0.0001, min(0.90, len(s) / 140.0))
-        return max(0.0001, round(min(0.95, _r1f1(s, reference) / 0.35), 4))
+            return max(0.05, min(0.90, len(s) / 140.0))
+        return max(0.05, round(min(0.95, _r1f1(s, reference) / 0.35), 4))
 
     @staticmethod
     def _reply_score(
@@ -707,13 +690,12 @@ class EmailTriageEnvironment:
         if not needs:
             return 0.80 if not reply else 0.10
         if not reply or len(reply.strip()) < 25:
-            return 0.0001
+            return 0.05
         r = reply.strip()
         ref = f"{body} {' '.join(key_terms)}"
         rel = _r1f1(r, ref)
         if len(r) > 700:
-            return max(0.0001, round(min(0.65, 0.35 + 0.3 * min(0.9999, rel / 0.20)), 4))
+            return max(0.05, round(min(0.65, 0.35 + 0.3 * min(0.95, rel / 0.20)), 4))
         if rel < 0.10:
             return 0.20
-        return max(0.0001, round(min(0.95, 0.50 + 0.45 * min(0.9999, rel / 0.25)), 4))
-        
+        return max(0.05, round(min(0.95, 0.50 + 0.45 * min(0.95, rel / 0.25)), 4))
